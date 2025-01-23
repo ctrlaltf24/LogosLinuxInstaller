@@ -86,7 +86,7 @@ def ensure_appimage_download(app: App):
     app.status("Ensuring wine AppImage is downloaded…")
 
     downloaded_file = None
-    appimage_path = app.conf.wine_appimage_path or app.conf.wine_appimage_recommended_file_name #noqa: E501
+    appimage_path = app.conf.wine_appimage_recommended_file_name
     filename = Path(appimage_path).name
     downloaded_file = utils.get_downloaded_file_path(app.conf.download_dir, filename)
     if not downloaded_file:
