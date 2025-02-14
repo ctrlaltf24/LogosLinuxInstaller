@@ -750,6 +750,10 @@ class Config:
     def wine_binary(self) -> str:
         """Returns absolute path to the wine binary"""
         output = self._raw.wine_binary
+        # Needed in binary mode as sometimes this is extracted into a /tmp dir
+        if self._raw.wine_binary_code == "Bundled" and self._raw.wine_binary is not None and not Path(self._raw.wine_binary).exists(): #noqa: E501
+            # Looks like our tmp path has changed. Updated it.
+            self.wine_binary = utils.bundled_wine_path()
         if output is None:
             question = f"Which Wine AppImage or binary should the script use to install {self.faithlife_product} v{self.faithlife_product_version} in {self.install_dir}?: "  # noqa: E501
             options = utils.get_wine_options(self.app)

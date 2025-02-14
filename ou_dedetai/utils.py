@@ -173,11 +173,18 @@ def filter_versions(versions, threshold, check_version_part):
     return [version for version in versions if check_logos_release_version(version, threshold, check_version_part)]  # noqa: E501
 
 
+def bundle_root() -> str:
+    return str(Path(constants.APP_ASSETS_DIR) / "wine" / "squashfs-root")
+
+def bundled_wine_path() -> str:
+    return str(Path(bundle_root()) / "opt" / "wine-staging" / "bin" / "wine64") #noqa: E501
+
+
 def get_winebin_code_and_desc(app: App, binary) -> Tuple[str, str | None]:
     """Gets the type of wine in use and it's description
     
     Returns:
-        code: One of: Recommended, AppImage, System, Proton, PlayOnLinux, Custom
+        code: One of: Recommended, AppImage, System, Proton, PlayOnLinux, Bundled, Custom
         description: Description of the above
     """
     # Set binary code, description, and path based on path
@@ -187,6 +194,7 @@ def get_winebin_code_and_desc(app: App, binary) -> Tuple[str, str | None]:
         "System": "Use the system binary (i.e., /usr/bin/wine64). WINE must be 7.18-staging or later, or 8.16-devel or later, and cannot be version 8.0.",  # noqa: E501
         "Proton": "Install using the Steam Proton fork of WINE.",
         "PlayOnLinux": "Install using a PlayOnLinux WINE64 binary.",
+        "Bundled": f"Use wine binary included in {constants.APP_NAME} binary",
         "Custom": "Use a WINE64 binary from another directory.",
     }
     # TODO: The GUI currently cannot distinguish between the recommended
@@ -202,6 +210,8 @@ def get_winebin_code_and_desc(app: App, binary) -> Tuple[str, str | None]:
         binary = str(binary)
     if binary == f"{app.conf.installer_binary_dir}/{app.conf.wine_appimage_recommended_file_name}":  # noqa: E501
         code = "Recommended"
+    elif binary.startswith(bundle_root()): #noqa: E501
+        code = "Bundled"
     elif binary.lower().endswith('.appimage'):
         code = "AppImage"
     elif "/usr/bin/" in binary:
@@ -228,6 +238,9 @@ def get_wine_options(app: App) -> List[str]:  # noqa: E501
 
     if recomended_appimage in appimages:
         appimages.remove(recomended_appimage)
+
+    if Path(bundled_wine_path()).exists():
+        wine_binary_options.append(bundled_wine_path())
 
     # Add AppImages to list
     wine_binary_options.append(recomended_appimage)
