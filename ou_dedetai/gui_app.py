@@ -711,27 +711,34 @@ def start_gui_app(
     root.title(f"{constants.APP_NAME} Control Panel")
     root.resizable(False, False)
 
-    control_gui = gui.ControlGui(root)
-
-    def _start_install():
+    def _start_install() -> Callable[[], None]:
+        # This needs to be created before root.mainloop is called
         installer_gui = gui.StatusWithLabelGui(root, "Installing FaithLife app")
-        app = GuiApp(root, installer_gui, ephemeral_config)
-        installer.install(app)
-        # Wait for a couple seconds so user can understand they're done.
-        time.sleep(3)
-        root.destroy()
+        def _run():
+            app = GuiApp(root, installer_gui, ephemeral_config)
+            # This may take a minute to run, as it may need to reach out to the internet
+            app.populate_defaults()
+            installer.install(app)
+            # Wait for a couple seconds so user can understand they're done.
+            time.sleep(3)
+            root.destroy()
+        return _run
 
-    def _start_control_panel():
-        if recovery:
-            recovery_gui = gui.StatusWithLabelGui(root, "Recovering FaithLife app")
-            recovery(GuiApp(root, recovery_gui, ephemeral_config))
-            recovery_gui.destroy()
-        ControlWindow(root, control_gui, ephemeral_config, class_=classname)
+    def _start_control_panel() -> Callable[[], None]:
+        # This needs to be created before root.mainloop is called
+        control_gui = gui.ControlGui(root)
+        def _run():
+            if recovery:
+                recovery_gui = gui.StatusWithLabelGui(root, "Recovering FaithLife app")
+                recovery(GuiApp(root, recovery_gui, ephemeral_config))
+                recovery_gui.destroy()
+            ControlWindow(root, control_gui, ephemeral_config, class_=classname)
+        return _run
 
     if install_only:
-        target=_start_install
+        target=_start_install()
     else:
-        target=_start_control_panel
+        target=_start_control_panel()
 
     # Start the control panel on a new thread so it can open dialogs
     # as a part of it's constructor
