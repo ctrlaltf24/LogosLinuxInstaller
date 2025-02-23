@@ -438,7 +438,7 @@ class PersistentConfiguration:
                 if (isinstance(v, str) and v.startswith(self.install_dir)): #noqa: E501
                     output[k] = utils.get_relative_path(v, self.install_dir)
 
-            portable_config_path = os.path.expanduser(self.install_dir + f"/{constants.BINARY_NAME}.json")
+            portable_config_path = os.path.expanduser(self.install_dir + f"/{constants.BINARY_NAME}.json") #noqa: E501
             self.write_json_file(output, portable_config_path)
 
         self.write_json_file(output, config_file_path)
@@ -766,6 +766,8 @@ class Config:
         # Return the full path so we the callee doesn't need to think about it
         if self._raw.wine_binary is not None and not Path(self._raw.wine_binary).exists() and (Path(self.install_dir) / self._raw.wine_binary).exists(): # noqa: E501
             return str(Path(self.install_dir) / self._raw.wine_binary)
+        if not Path(output).exists():
+            logging.warning(f"Wine binary {output} doesn't exist")
         return output
 
     @wine_binary.setter
