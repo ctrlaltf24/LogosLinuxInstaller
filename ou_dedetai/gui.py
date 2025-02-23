@@ -153,11 +153,11 @@ class StatusGui(Frame):
         self.progress.state(['disabled'])
 
 
-class RecoveryGui(StatusGui):
-    def __init__(self, root, *args, **kwargs):
-        super(RecoveryGui, self).__init__(root, **kwargs)
+class StatusWithLabelGui(StatusGui):
+    def __init__(self, root, label: str, *args, **kwargs):
+        super(StatusWithLabelGui, self).__init__(root, **kwargs)
 
-        self.app_label = Label(self, text="Recovering FaithLife app")
+        self.app_label = Label(self, text=label)
         self.app_label.grid(column=0, row=0, columnspan=3, sticky='we', pady=2)  # noqa: E501
         Separator(self, orient='horizontal').grid(column=0, row=1)
         self.message_label.grid(column=0, row=2, columnspan=3, sticky='we', pady=2)  # noqa: E501
