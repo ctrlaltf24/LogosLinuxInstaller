@@ -152,11 +152,15 @@ def detect_and_recover(ephemeral_config: EphemeralConfiguration):
                 f"{persistent_config.faithlife_product}?"
             )
             context=(
-                "The following recovery method is helpful if resource downloading is "
-                "crashing, but may not be required.\n"
+                "The following recovery method is not recommended unless "
+                "downloading resources is crashing "
+                "(i.e. the 'Continue' button causes a crash).\n"
                 "You will need to download your resources manually in the Library tab. "
                 "Use the filter 'Not on This Device' and use CTRL+A to "
-                "make this easier."
+                "make this easier.\n"
+                "After downloading all your resources, wait until after it indexes "
+                "before using the application - some features may crash if they are "
+                "opened prematurely."
             )
 
             if not app.approve(question=question, context=context):
@@ -182,6 +186,8 @@ def detect_and_recover(ephemeral_config: EphemeralConfiguration):
                     "UPDATE Preferences SET Data='<data/>' WHERE `Type`='AppLocalPreferences'" #noqa: E501
                 ]
             )
+            # XXX: leave a note to future us to let us know the user skipped this during the installtion.
+            # Useful if this operation has side effects in the future, being able to tell that the user did this WAYYYY back when they first installed logos
 
             app.status(
                 f"Recovery attempt of {app.conf.faithlife_product} complete. "
