@@ -20,7 +20,7 @@ import time
 from ou_dedetai.app import App
 from packaging.version import Version
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from . import constants
 from . import network
@@ -119,7 +119,7 @@ def install_dependencies(app: App):
         targetversion = int(app.conf.faithlife_product_version)
     else:
         targetversion = 10
-    app.status(f"Checking {app.conf.faithlife_product} {str(targetversion)} dependencies…")
+    app.status(f"Checking {app.conf.faithlife_product} {str(targetversion)} dependencies…") #noqa: E501
 
     if targetversion == 10:
         system.install_dependencies(app, target_version=10)  # noqa: E501
@@ -651,6 +651,14 @@ def get_timestamp():
 
 def parse_bool(string: str) -> bool:
     return string.lower() in ['true', '1', 'y', 'yes']
+
+
+def execute_sql(path: str | Path, sql_statements: list[str]) -> list[Any]:
+    with sqlite3.connect(str(path), autocommit=True) as con:
+        cur = con.cursor()
+        for statement in sql_statements:
+            cur.execute(statement)
+        return cur.fetchall()
 
 
 def watch_db(path: str, sql_statements: list[str]):
