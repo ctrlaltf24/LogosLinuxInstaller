@@ -3,6 +3,8 @@ import logging
 import shutil
 import time
 from pathlib import Path
+from typing import List
+from typing import Tuple
 from ou_dedetai import constants
 from ou_dedetai import utils
 from ou_dedetai.app import App
@@ -11,7 +13,7 @@ from ou_dedetai.app import App
 class BackupBase:
     DATA_DIRS = ['Data', 'Documents', 'Users']
 
-    def __init__(self, app: App):
+    def __init__(self, app: App) -> None:
         self.app = app
         self.mode = None
         self.source_dir = None
@@ -27,12 +29,16 @@ class BackupBase:
         try:
             self.backup_dir.mkdir(exist_ok=True, parents=True)
         except PermissionError:
-            m = f"Folder not accessible: {self.backup_dir}"
+            m = f"folder not accessible: {self.backup_dir}"
             if constants.RUNMODE == 'snap':
-                m += f"{m}\nTry connecting removable media:\nsnap connect {constants.BINARY_NAME}:removable-media"
+                m += f"{m}\n\nTry connecting removable media:\nsnap connect {constants.BINARY_NAME}:removable-media\n"  # noqa: E501
             self.app.exit(m)
 
-    def _copy_dirs(self, src_dirs, dst_dir):
+    def _copy_dirs(
+            self,
+            src_dirs: List[str|Path] | Tuple[str|Path],
+            dst_dir: Path|str,
+        ) -> None:
         # logging.debug("starting _copy_dirs")
         for src in src_dirs:
             if not isinstance(src, Path):
@@ -40,47 +46,48 @@ class BackupBase:
             logging.debug(f"copying \"{src}\" to \"{dst_dir}/{src.name}\"")
             shutil.copytree(src, Path(dst_dir) / src.name)
 
-    def _get_copy_percentage(self):
+    def _get_copy_percentage(self) -> int:
         delta = self._get_dest_disk_used() - self.destination_disk_used_init
         percent = int(delta * 100 / self.data_size)
         # logging.debug(f"{percent=}")
         return percent
 
-    def _get_dest_disk_used(self):
+    def _get_dest_disk_used(self) -> int:
         return shutil.disk_usage(self.destination_dir).used
 
-    def _get_dir_group_size(self, dirs):
-        self.app.status("Calculating backup size…")
-        self.app.start_thread(utils.get_folder_group_size, dirs, self.q)
-        size = self.q.get()
-        logging.debug(f"{size=}")
+    def _get_dir_group_size(
+            self,
+            dirs: List[Path] | Tuple[Path],
+        ) -> int:
+        size = utils.get_folder_group_size(dirs)
+        logging.debug(f"backup {size=}")
         return size
 
-    def _get_source_subdirs(self):
+    def _get_source_subdirs(self) -> List[Path]:
         dirs = [self.source_dir / d for d in self.DATA_DIRS if (self.source_dir / d).is_dir()]  # noqa: E501
         if not dirs:
-            self.app.exit(f"No files to {self.mode}")
+            self.app.exit(f"there are no files to {self.mode}")
         return dirs
 
-    def _prepare_dest_dir(self):
+    def _prepare_dest_dir(self) -> None:
         """Remove existing data."""
         for d in self.DATA_DIRS:
             dst = Path(self.destination_dir) / d
             if dst.is_dir():
                 shutil.rmtree(dst)
 
-    def _run(self):
+    def _run(self) -> None:
         if self.source_dir is None:
-            self.app.exit("Source not set")
+            self.app.exit("source directory not set")
         elif self.destination_dir is None:
-            self.app.exit("Destination not set")
+            self.app.exit("destination directory not set")
         src_dirs = self._get_source_subdirs()
 
         self.data_size = self._get_dir_group_size(src_dirs)
         self._prepare_dest_dir()
         self.destination_disk_used_init = self._get_dest_disk_used()
         self._verify_disk_space()
-        logging.debug("starting data copy")
+        # logging.debug("starting data copy thread")
         t = self.app.start_thread(self._copy_dirs, src_dirs, self.destination_dir)
         try:
             while t.is_alive():
@@ -89,71 +96,74 @@ class BackupBase:
             print()
         except KeyboardInterrupt:
             print()
-            self.app.exit("Cancelled with Ctrl+C.")
+            self.app.exit("user cancelled with Ctrl+C.")
         t.join()
-        logging.debug("finished data copy")
-        m = f"Finished {self.mode}. {self.data_size} bytes copied to {self.destination_dir}"  # noqa: E501
+        # logging.debug("finished data copy thread")
+        m = f"Finished {self.mode}. {self.data_size} bytes copied."
         self.app.status(m)
 
-    def _verify_disk_space(self):
+    def _verify_disk_space(self) -> None:
         if not utils.enough_disk_space(self.destination_dir, self.data_size):
-            # self.destination_dir.rmdir()
-            self.app.exit(f"Not enough free disk space for {self.mode}.")
+            try:
+                self.destination_dir.rmdir()
+            except OSError:  # folder not empty
+                logging.error(f"Tried to remove non-empty folder: {self.destination_dir}")  # noqa: E501
+            self.app.exit(f"not enough free disk space for {self.mode}.")
         logging.debug(f"Sufficient space verified on {self.destination_dir} disk.")
 
 
 class BackupTask(BackupBase):
-    def __init__(self, app: App):
+    def __init__(self, app: App) -> None:
         super().__init__(app)
         self.mode = 'backup'
         self.description = 'Use'
         self.source_dir = Path(self.app.conf._logos_appdata_dir).expanduser().resolve()
 
-    def run(self):
+    def run(self) -> None:
         """Run the backup task."""
         self._set_dest_dir()
-        self.app.status(f"Backing up data to {self.destination_dir}…")
+        self.app.status(f"Backing up data to: {self.destination_dir}")
         self._run()
 
-    def _set_dest_dir(self):
+    def _set_dest_dir(self) -> None:
         timestamp = utils.get_timestamp().replace('-', '')
         name = f"{self.app.conf.faithlife_product}-{timestamp}"
         self.destination_dir = self.backup_dir / name
-        logging.debug(f"Backup directory path: \"{self.destination_dir}\".")
+        logging.debug(f"Backup directory path: {self.destination_dir}.")
 
         # Check for existing backup.
         try:
             self.destination_dir.mkdir()
         except FileExistsError:
             # This shouldn't happen, there is a timestamp in the backup_dir name
-            self.app.exit(f"Backup already exists: {self.destination_dir}.")
+            self.app.exit(f"backup already exists at: {self.destination_dir}.")
 
 
 class RestoreTask(BackupBase):
-    def __init__(self, app: App):
+    def __init__(self, app: App) -> None:
         super().__init__(app)
         self.mode = 'restore'
 
-    def run(self):
+    def run(self) -> None:
         """Run the restore task."""
         if self.source_dir is None:
             self._set_source_dir()
         self._set_dest_dir()
 
-        self.app.status(f"Restoring backup from {self.source_dir}")
+        self.app.status(f"Restoring backup from: {self.source_dir}")
         self._run()
 
-    def set_source_dir(self, src_dir: Path | str):
+    def set_source_dir(self, src_dir: Path | str) -> None:
         """Explicitly set dir path to restore from"""
         self._set_source_dir(src_dir)
 
-    def _set_dest_dir(self):
+    def _set_dest_dir(self) -> None:
         # TODO: Use faithlife_product_name here?
         if not self.app.conf.logos_exe:
-            self.app.exit("Cannot restore, Logos is not installed")
+            self.app.exit("Logos is not installed.")
         self.destination_dir = Path(self.app.conf.logos_exe).parent
 
-    def _set_source_dir(self, src_dir: Path = None):
+    def _set_source_dir(self, src_dir: Path = None) -> None:
         if src_dir is None:
             src_dir = utils.get_latest_folder(self.backup_dir)
             # FIXME: Shouldn't this prompt this prompt the list of backups?
@@ -169,11 +179,11 @@ class RestoreTask(BackupBase):
         self.source_dir = src_dir
 
 
-def backup(app: App):
+def backup(app: App) -> None:
     backup = BackupTask(app)
     backup.run()
 
 
-def restore(app: App):
+def restore(app: App) -> None:
     restore = RestoreTask(app)
     restore.run()
