@@ -944,7 +944,11 @@ class Config:
         question = "New or existing folder to store backups in: "
         options = [PROMPT_OPTION_DIRECTORY]
         output = Path(self._ask_if_not_found("backup_dir", question, options))
-        output.mkdir(parents=True, exist_ok=True)
+        try:
+            output.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            logging.error(f"Can't create {output}.")
+            raise e
         return output
     
     @property
