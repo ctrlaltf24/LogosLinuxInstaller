@@ -165,17 +165,17 @@ class RestoreTask(BackupBase):
 
     def _set_source_dir(self, src_dir: Path = None) -> None:
         if src_dir is None:
-            src_dir = utils.get_latest_folder(self.backup_dir)
-            # FIXME: Shouldn't this prompt this prompt the list of backups?
-            # Rather than forcing the latest
+            all_backups = [str(d) for d in self.backup_dir.glob('*') if d.is_dir()]
+            all_backups.sort()
+            logging.debug(all_backups)
+            latest = all_backups.pop(-1)
+
             # Offer to restore the most recent backup.
-            if not self.app.approve(f"Restore most-recent backup?: {src_dir}", ""):  # noqa: E501
-                # Reset and re-prompt
-                self.app.conf._raw.backup_dir = None
-                src_dir = utils.get_latest_folder(self.backup_dir)
-        else:
-            if not isinstance(src_dir, Path):
-                src_dir = Path(src_dir)
+            options = [latest, *all_backups]
+            src_dir = self.app.ask("Choose backup folder to restore: ", options)
+
+        if not isinstance(src_dir, Path):
+            src_dir = Path(src_dir)
         self.source_dir = src_dir
 
 
