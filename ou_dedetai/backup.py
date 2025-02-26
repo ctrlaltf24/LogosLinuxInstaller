@@ -46,6 +46,12 @@ class BackupBase:
             logging.debug(f"copying \"{src}\" to \"{dst_dir}/{src.name}\"")
             shutil.copytree(src, Path(dst_dir) / src.name)
 
+    def _get_all_backups(self) -> List[str]:
+        all_backups = [str(d) for d in self.backup_dir.glob('*') if d.is_dir() and d.name.startswith(self.app.conf.faithlife_product_name)]  # noqa: E501
+        all_backups.sort()
+        logging.debug(all_backups)
+        return all_backups
+
     def _get_copy_percentage(self) -> int:
         delta = self._get_dest_disk_used() - self.destination_disk_used_init
         percent = int(delta * 100 / self.data_size)
@@ -158,16 +164,14 @@ class RestoreTask(BackupBase):
         self._set_source_dir(src_dir)
 
     def _set_dest_dir(self) -> None:
-        # TODO: Use faithlife_product_name here?
+        # TODO: Use faithlife_product_name here? Ensure file exists?
         if not self.app.conf.logos_exe:
             self.app.exit("Logos is not installed.")
         self.destination_dir = Path(self.app.conf.logos_exe).parent
 
     def _set_source_dir(self, src_dir: Path = None) -> None:
         if src_dir is None:
-            all_backups = [str(d) for d in self.backup_dir.glob('*') if d.is_dir()]
-            all_backups.sort()
-            logging.debug(all_backups)
+            all_backups = self._get_all_backups()
             latest = all_backups.pop(-1)
 
             # Offer to restore the most recent backup.
