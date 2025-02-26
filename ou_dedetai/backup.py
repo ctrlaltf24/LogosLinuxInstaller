@@ -3,136 +3,177 @@ import logging
 import shutil
 import time
 from pathlib import Path
+from ou_dedetai import constants
 from ou_dedetai import utils
 from ou_dedetai.app import App
 
 
-def backup(app: App):
-    backup_and_restore(mode='backup', app=app)
+class BackupBase:
+    DATA_DIRS = ['Data', 'Documents', 'Users']
 
-
-def restore(app: App):
-    backup_and_restore(mode='restore', app=app)
-
-
-def copy_data(src_dirs, dst_dir):
-    for src in src_dirs:
-        shutil.copytree(src, Path(dst_dir) / src.name)
-
-
-# FIXME: almost seems like this is long enough to reuse the install_step count in app
-# for a more detailed progress bar
-def backup_and_restore(mode: str, app: App):
-    app.status(f"Starting {mode}…")
-    data_dirs = ['Data', 'Documents', 'Users']
-    backup_dir = Path(app.conf.backup_dir).expanduser().resolve()
-
-    verb = 'Use' if mode == 'backup' else 'Restore backup from'
-    if not app.approve(f"{verb} existing backups folder \"{app.conf.backup_dir}\"?"): #noqa: E501
-        # Reset backup dir.
-        # The app will re-prompt next time the backup_dir is accessed
-        app.conf._raw.backup_dir = None
-
-    # Set source folders.
-    backup_dir = Path(app.conf.backup_dir)
-    try:
-        backup_dir.mkdir(exist_ok=True, parents=True)
-    except PermissionError:
-        verb = 'access'
-        if mode == 'backup':
-            verb = 'create'
-        app.exit(f"Can't {verb} folder: {backup_dir}")
-
-    if mode == 'restore':
-        restore_dir = utils.get_latest_folder(app.conf.backup_dir)
-        restore_dir = Path(restore_dir).expanduser().resolve()
-        # FIXME: Shouldn't this prompt this prompt the list of backups?
-        # Rather than forcing the latest
-        # Offer to restore the most recent backup.
-        if not app.approve(f"Restore most-recent backup?: {restore_dir}", ""):  # noqa: E501
-            # Reset and re-prompt
+    def __init__(self, app: App):
+        self.app = app
+        self.mode = None
+        self.source_dir = None
+        self.data_size = None
+        self.destination_dir = None
+        self.destination_disk_used_init = None
+        self.q: queue.Queue[int] = queue.Queue()
+        if not self.app.approve(f"Use existing backups folder \"{self.app.conf.backup_dir}\"?"): # noqa: E501
+            # Reset backup dir.
+            # The app will re-prompt next time the backup_dir is accessed
             app.conf._raw.backup_dir = None
-            restore_dir = utils.get_latest_folder(app.conf.backup_dir)
-            restore_dir = Path(restore_dir).expanduser().resolve()
-        source_dir_base = restore_dir
-    else:
-        if not app.conf._logos_appdata_dir:
-            app.exit("Cannot backup, Logos installation not found")
-        source_dir_base = Path(app.conf._logos_appdata_dir)
-    src_dirs = [source_dir_base / d for d in data_dirs if Path(source_dir_base / d).is_dir()]  # noqa: E501
-    logging.debug(f"{src_dirs=}")
-    if not src_dirs:
-        app.exit(f"No files to {mode}")
+        self.backup_dir = Path(self.app.conf.backup_dir).expanduser().resolve()
+        try:
+            self.backup_dir.mkdir(exist_ok=True, parents=True)
+        except PermissionError:
+            m = f"Folder not accessible: {self.backup_dir}"
+            if constants.RUNMODE == 'snap':
+                m += f"{m}\nTry connecting removable media:\nsnap connect {constants.BINARY_NAME}:removable-media"
+            self.app.exit(m)
 
-    if mode == 'backup':
-        app.status("Backing up data…")
-    else:
-        app.status("Restoring data…")
+    def _copy_dirs(self, src_dirs, dst_dir):
+        # logging.debug("starting _copy_dirs")
+        for src in src_dirs:
+            if not isinstance(src, Path):
+                src = Path(src)
+            logging.debug(f"copying \"{src}\" to \"{dst_dir}/{src.name}\"")
+            shutil.copytree(src, Path(dst_dir) / src.name)
 
-    # Get source transfer size.
-    q: queue.Queue[int] = queue.Queue()
-    message = "Calculating backup size…"
-    app.status(message)
-    i = 0
-    t = app.start_thread(utils.get_folder_group_size, src_dirs, q)
-    try:
-        while t.is_alive():
-            i += 1
-            i = i % 20
-            app.status(f"{message}{"." * i}\r")
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        print()
-        app.exit("Cancelled with Ctrl+C.")
-    t.join()
-    src_size = q.get()
-    if src_size == 0:
-        app.exit(f"Nothing to {mode}!")
+    def _get_copy_percentage(self):
+        delta = self._get_dest_disk_used() - self.destination_disk_used_init
+        percent = int(delta * 100 / self.data_size)
+        # logging.debug(f"{percent=}")
+        return percent
 
-    # Set destination folder.
-    if mode == 'restore':
-        if not app.conf.logos_exe:
-            app.exit("Cannot restore, Logos is not installed")
-        dst_dir = Path(app.conf.logos_exe).parent
-        # Remove existing data.
-        for d in data_dirs:
-            dst = Path(dst_dir) / d
+    def _get_dest_disk_used(self):
+        return shutil.disk_usage(self.destination_dir).used
+
+    def _get_dir_group_size(self, dirs):
+        self.app.status("Calculating backup size…")
+        self.app.start_thread(utils.get_folder_group_size, dirs, self.q)
+        size = self.q.get()
+        logging.debug(f"{size=}")
+        return size
+
+    def _get_source_subdirs(self):
+        dirs = [self.source_dir / d for d in self.DATA_DIRS if (self.source_dir / d).is_dir()]  # noqa: E501
+        if not dirs:
+            self.app.exit(f"No files to {self.mode}")
+        return dirs
+
+    def _prepare_dest_dir(self):
+        """Remove existing data."""
+        for d in self.DATA_DIRS:
+            dst = Path(self.destination_dir) / d
             if dst.is_dir():
                 shutil.rmtree(dst)
-    else:  # backup mode
+
+    def _run(self):
+        if self.source_dir is None:
+            self.app.exit("Source not set")
+        elif self.destination_dir is None:
+            self.app.exit("Destination not set")
+        src_dirs = self._get_source_subdirs()
+
+        self.data_size = self._get_dir_group_size(src_dirs)
+        self._prepare_dest_dir()
+        self.destination_disk_used_init = self._get_dest_disk_used()
+        self._verify_disk_space()
+        logging.debug("starting data copy")
+        t = self.app.start_thread(self._copy_dirs, src_dirs, self.destination_dir)
+        try:
+            while t.is_alive():
+                self.app.status("copying…\r", self._get_copy_percentage())
+                time.sleep(0.5)
+            print()
+        except KeyboardInterrupt:
+            print()
+            self.app.exit("Cancelled with Ctrl+C.")
+        t.join()
+        logging.debug("finished data copy")
+        m = f"Finished {self.mode}. {self.data_size} bytes copied to {self.destination_dir}"  # noqa: E501
+        self.app.status(m)
+
+    def _verify_disk_space(self):
+        if not utils.enough_disk_space(self.destination_dir, self.data_size):
+            # self.destination_dir.rmdir()
+            self.app.exit(f"Not enough free disk space for {self.mode}.")
+        logging.debug(f"Sufficient space verified on {self.destination_dir} disk.")
+
+
+class BackupTask(BackupBase):
+    def __init__(self, app: App):
+        super().__init__(app)
+        self.mode = 'backup'
+        self.description = 'Use'
+        self.source_dir = Path(self.app.conf._logos_appdata_dir).expanduser().resolve()
+
+    def run(self):
+        """Run the backup task."""
+        self._set_dest_dir()
+        self.app.status(f"Backing up data to {self.destination_dir}…")
+        self._run()
+
+    def _set_dest_dir(self):
         timestamp = utils.get_timestamp().replace('-', '')
-        current_backup_name = f"{app.conf.faithlife_product}{app.conf.faithlife_product_version}-{timestamp}"  # noqa: E501
-        dst_dir = backup_dir / current_backup_name
-        logging.debug(f"Backup directory path: \"{dst_dir}\".")
+        name = f"{self.app.conf.faithlife_product}-{timestamp}"
+        self.destination_dir = self.backup_dir / name
+        logging.debug(f"Backup directory path: \"{self.destination_dir}\".")
 
         # Check for existing backup.
         try:
-            dst_dir.mkdir()
+            self.destination_dir.mkdir()
         except FileExistsError:
             # This shouldn't happen, there is a timestamp in the backup_dir name
-            app.exit(f"Backup already exists: {dst_dir}.")
+            self.app.exit(f"Backup already exists: {self.destination_dir}.")
 
-    # Verify disk space.
-    if not utils.enough_disk_space(dst_dir, src_size):
-        dst_dir.rmdir()
-        app.exit(f"Not enough free disk space for {mode}.")
 
-    # Run file transfer.
-    if mode == 'restore':
-        m = f"Restoring backup from {str(source_dir_base)}…"
-    else:
-        m = f"Backing up to {str(dst_dir)}…"
-    app.status(m)
-    t = app.start_thread(copy_data, src_dirs, dst_dir)
-    try:
-        counter = 0
-        while t.is_alive():
-            logging.debug(f"DEV: Still copying… {counter}")
-            counter = counter + 1
-            time.sleep(1)
-        print()
-    except KeyboardInterrupt:
-        print()
-        app.exit("Cancelled with Ctrl+C.")
-    t.join()
-    app.status(f"Finished {mode}. {src_size} bytes copied to {str(dst_dir)}")
+class RestoreTask(BackupBase):
+    def __init__(self, app: App):
+        super().__init__(app)
+        self.mode = 'restore'
+
+    def run(self):
+        """Run the restore task."""
+        if self.source_dir is None:
+            self._set_source_dir()
+        self._set_dest_dir()
+
+        self.app.status(f"Restoring backup from {self.source_dir}")
+        self._run()
+
+    def set_source_dir(self, src_dir: Path | str):
+        """Explicitly set dir path to restore from"""
+        self._set_source_dir(src_dir)
+
+    def _set_dest_dir(self):
+        # TODO: Use faithlife_product_name here?
+        if not self.app.conf.logos_exe:
+            self.app.exit("Cannot restore, Logos is not installed")
+        self.destination_dir = Path(self.app.conf.logos_exe).parent
+
+    def _set_source_dir(self, src_dir: Path = None):
+        if src_dir is None:
+            src_dir = utils.get_latest_folder(self.backup_dir)
+            # FIXME: Shouldn't this prompt this prompt the list of backups?
+            # Rather than forcing the latest
+            # Offer to restore the most recent backup.
+            if not self.app.approve(f"Restore most-recent backup?: {src_dir}", ""):  # noqa: E501
+                # Reset and re-prompt
+                self.app.conf._raw.backup_dir = None
+                src_dir = utils.get_latest_folder(self.backup_dir)
+        else:
+            if not isinstance(src_dir, Path):
+                src_dir = Path(src_dir)
+        self.source_dir = src_dir
+
+
+def backup(app: App):
+    backup = BackupTask(app)
+    backup.run()
+
+
+def restore(app: App):
+    restore = RestoreTask(app)
+    restore.run()
