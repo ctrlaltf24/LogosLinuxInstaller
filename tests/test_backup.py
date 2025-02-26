@@ -21,7 +21,7 @@ class TestBackup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             name = 'Logos'
-            self.app.conf.faithlife_product_name = name
+            self.app.conf.faithlife_product = name
             self.app.conf.backup_dir = d
             backup_dirs = []
             for n in ('1', '2', '3'):
@@ -81,7 +81,7 @@ class TestRestore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             name = 'Logos'
-            self.app.conf.faithlife_product_name = name
+            self.app.conf.faithlife_product = name
             self.app.conf.backup_dir = d / 'backups'
             nd = self.app.conf.backup_dir / f"{name}-3"
             nd.mkdir(parents=True)

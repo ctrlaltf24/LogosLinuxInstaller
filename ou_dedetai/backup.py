@@ -47,7 +47,7 @@ class BackupBase:
             shutil.copytree(src, Path(dst_dir) / src.name)
 
     def _get_all_backups(self) -> List[str]:
-        all_backups = [str(d) for d in self.backup_dir.glob('*') if d.is_dir() and d.name.startswith(self.app.conf.faithlife_product_name)]  # noqa: E501
+        all_backups = [str(d) for d in self.backup_dir.glob('*') if d.is_dir() and d.name.startswith(self.app.conf.faithlife_product)]  # noqa: E501
         all_backups.sort()
         logging.debug(all_backups)
         return all_backups
@@ -164,7 +164,7 @@ class RestoreTask(BackupBase):
         self._set_source_dir(src_dir)
 
     def _set_dest_dir(self) -> None:
-        # TODO: Use faithlife_product_name here? Ensure file exists?
+        # TODO: Use faithlife_product here? Ensure file exists?
         if not self.app.conf.logos_exe:
             self.app.exit("Logos is not installed.")
         self.destination_dir = Path(self.app.conf.logos_exe).parent
