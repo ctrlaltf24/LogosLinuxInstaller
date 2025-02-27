@@ -8,6 +8,7 @@ import logging
 import psutil
 import threading
 
+from ou_dedetai import database
 from ou_dedetai.app import App
 
 from . import system
@@ -167,7 +168,7 @@ class LogosManager:
             ('OptIn="true"' if val else 'OptIn="false"') +
             """ StartDownloadHour="0" StopDownloadHour="0" MarkNewResourcesAsCloud="true" />' WHERE Type='UpdateManagerPreferences'""" #noqa: E501
         )
-        self.app.start_thread(utils.watch_db, str(db_path), [sql])
+        self.app.start_thread(database.watch_db, str(db_path), [sql])
 
     def prevent_logos_updates(self):
         """Edits Logos' internal database to remove pending installers
@@ -201,7 +202,7 @@ class LogosManager:
             "UPDATE Resources SET Status=1, UpdateId=NULL WHERE UpdateId IS NOT NULL "+
                 "AND UpdateId NOT IN (SELECT UpdateId FROM Updates)"
         ]
-        self.app.start_thread(utils.watch_db, str(db_path), sql)
+        self.app.start_thread(database.watch_db, str(db_path), sql)
 
     # Also noticed if the database Data/*/CloudResourceManager/CloudResources.db 
     # table TransitionStates has a ResourceId that isn't registered in UpdateManager,
