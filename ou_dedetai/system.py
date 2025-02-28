@@ -459,7 +459,7 @@ def get_package_manager() -> PackageManager | None:
             "cabextract " # winetricks
         )
         incompatible_packages = ""  # appimagelauncher handled separately
-    elif shutil.which('zypper') is not None:  # manjaro
+    elif shutil.which('zypper') is not None:  # OpenSUSE
         install_command = ["zypper", "--non-interactive", "install"]  # noqa: E501
         download_command = ["zypper", "download"]  # noqa: E501
         remove_command = ["zypper", "--non-interactive", "remove"]  # noqa: E501
@@ -895,6 +895,7 @@ def ensure_winetricks(
     if (
         app.conf.wine_binary_code in ["Recommended", "AppImage"]
         and app.conf.wine_appimage_path is not None
+        and app.conf.wine_appimage_path.exists()
     ):
         winetricks_path.symlink_to(app.conf.wine_appimage_path)
         logging.debug("Winetricks symlinked to appimage.")
