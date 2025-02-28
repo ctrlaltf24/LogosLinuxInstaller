@@ -920,8 +920,7 @@ def ensure_winetricks(
                 continue
             zi.filename = Path(zi.filename).name
             if zi.filename == 'winetricks':
-                # XXX: ensure this works and doesn't create a directory
-                z.extract(zi, path=str(winetricks_path))
+                z.extract(zi, path=str(winetricks_path.parent))
                 break
     os.chmod(winetricks_path, 0o755)
     logging.debug("Winetricks installed.")

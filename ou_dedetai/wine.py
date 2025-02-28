@@ -384,12 +384,10 @@ def run_winetricks(app: App, *args):
     process = run_wine_proc(app.conf.winetricks_binary, app, exe_args=cmd)
     if process is None:
         app.exit("Failed to spawn winetricks")
+    logging.debug(f"Waiting for \"winetricks {' '.join(cmd)}\" To complete")
     process.wait()
-    # XXX: test to ensure this works
     if process.returncode != 0:
-        # XXX: improve warning/exception message
-        logging.warning(f"\"winetricks {' '.join(cmd)}\" Failed!")
-        raise ValueError("Failed to spawn winetricks")
+        app.exit(f"\"winetricks {' '.join(cmd)}\" Failed!")
     logging.info(f"\"winetricks {' '.join(cmd)}\" DONE!")
     wineserver_wait(app)
     logging.debug(f"procs using {app.conf.wine_prefix}:")

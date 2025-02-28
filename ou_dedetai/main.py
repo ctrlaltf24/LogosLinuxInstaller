@@ -191,6 +191,10 @@ def get_parser():
             '; WARNING: wine will not accept user input!'
         ),
     )
+    cmd.add_argument(
+        '--winetricks', nargs='*',
+        help="run winetricks command",
+    )
     return parser
 
 
@@ -278,11 +282,12 @@ def parse_args(args, parser) -> Tuple[EphemeralConfiguration, Callable[[Ephemera
         'update_self',
         'update_latest_appimage',
         'wine',
+        'winetricks',
     ]
 
     run_action = None
     for arg in actions:
-        if getattr(args, arg):
+        if getattr(args, arg) or getattr(args, arg) == []:
             if arg == "set_appimage":
                 ephemeral_config.wine_appimage_path = getattr(args, arg)[0]
                 if not utils.file_exists(ephemeral_config.wine_appimage_path):
@@ -293,7 +298,7 @@ def parse_args(args, parser) -> Tuple[EphemeralConfiguration, Callable[[Ephemera
                     raise argparse.ArgumentTypeError(e)
             # Re-use this variable for either wine or winetricks execution
             elif arg == 'wine' or arg == 'winetricks':
-                ephemeral_config.wine_args = getattr(args, 'wine')
+                ephemeral_config.wine_args = getattr(args, arg)
             run_action = cli_operation(arg)
             break
     if getattr(args, "install_app"):
