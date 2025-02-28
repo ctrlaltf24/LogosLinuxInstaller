@@ -389,7 +389,6 @@ def run_winetricks(app: App, *args):
     if process.returncode != 0:
         app.exit(f"\"winetricks {' '.join(cmd)}\" Failed!")
     logging.info(f"\"winetricks {' '.join(cmd)}\" DONE!")
-    wineserver_wait(app)
     logging.debug(f"procs using {app.conf.wine_prefix}:")
     for proc in utils.get_procs_using_file(app.conf.wine_prefix):
         logging.debug(f"winetricks proc: {proc=}")
