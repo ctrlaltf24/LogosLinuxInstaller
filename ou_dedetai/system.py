@@ -466,7 +466,7 @@ def get_package_manager() -> PackageManager | None:
         query_command =  ["zypper", "se", "-si"]
         query_prefix = 'i  | '
         packages = (
-            "fuse2 "  # appimages
+            "fuse "  # appimages
             "samba wget "  # wine
             "curl gawk grep "  # other
             "7zip cabextract "  # winetricks
