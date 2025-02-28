@@ -376,6 +376,45 @@ def install_msi(app: App):
     return run_wine_proc(wine_exe, app, exe="msiexec", exe_args=exe_args)
 
 
+def run_winetricks(app: App, *args):
+    cmd = [*args]
+    if "-q" not in args and app.conf.winetricks_binary:
+        cmd.insert(0, "-q")
+    logging.info(f"running \"winetricks {' '.join(cmd)}\"")
+    process = run_wine_proc(app.conf.winetricks_binary, app, exe_args=cmd)
+    if process is None:
+        app.exit("Failed to spawn winetricks")
+    process.wait()
+    # XXX: test to ensure this works
+    if process.returncode != 0:
+        # XXX: improve warning/exception message
+        logging.warning(f"\"winetricks {' '.join(cmd)}\" Failed!")
+        raise ValueError("Failed to spawn winetricks")
+    logging.info(f"\"winetricks {' '.join(cmd)}\" DONE!")
+    wineserver_wait(app)
+    logging.debug(f"procs using {app.conf.wine_prefix}:")
+    for proc in utils.get_procs_using_file(app.conf.wine_prefix):
+        logging.debug(f"winetricks proc: {proc=}")
+    else:
+        logging.debug('winetricks proc: <None>')
+
+
+def install_fonts(app: App):
+    """Installs all required fonts:
+    
+    - arial
+    """
+    fonts_dir = Path(app.conf.wine_prefix) / "drive_c" / "windows" / "Fonts"
+    fonts = ["arial"]
+    for i, f in enumerate(fonts):
+        if (fonts_dir / f"{f}.ttf").exists():
+            logging.debug(f"Found font {f} already in fonts dir, no need to install.")
+            continue
+        app.status(f"Configuring font: {f}…", i / len(fonts)) # noqa: E501
+        args = [f]
+        run_winetricks(app, *args)
+
+
 def get_winecmd_encoding(app: App) -> Optional[str]:
     # Get wine system's cmd.exe encoding for proper decoding to UTF8 later.
     logging.debug("Getting wine system's cmd.exe encoding.")
