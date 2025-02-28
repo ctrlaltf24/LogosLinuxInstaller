@@ -857,6 +857,9 @@ def install_dependencies(app: App, target_version=10):  # noqa: E501
         f"{app.superuser_command}", 'sh', '-c', '"', *command, '"'
     ]
     command_str = ' '.join(final_command)
+    # FIXME: consider how to tell the user which command we're running.
+    # When we install on the terminal the user doesn't know what they're sudo'ing
+    # logging.info(f"Running command: {command_str}")
 
     if not install_deps_failed:
         try:
