@@ -476,7 +476,7 @@ def get_package_manager() -> PackageManager | None:
         install_command = ["apk", "--no-interactive", "add"]  # noqa: E501
         download_command = ["apk", "--no-interactive", "fetch"]  # noqa: E501
         remove_command = ["apk", "--no-interactive", "del"]  # noqa: E501
-        query_command = ["apk", "list", "-i"]
+        query_command = ["apk", "list", "-I"]
         query_prefix = ''
         packages = (
             "bash bash-completion "  # bash support
