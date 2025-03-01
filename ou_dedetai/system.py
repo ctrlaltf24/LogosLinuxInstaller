@@ -464,6 +464,7 @@ def get_package_manager() -> PackageManager | None:
         download_command = ["zypper", "download"]  # noqa: E501
         remove_command = ["zypper", "--non-interactive", "remove"]  # noqa: E501
         query_command =  ["zypper", "se", "-si"]
+        # This could also be a 'i+ | '
         query_prefix = 'i  | '
         packages = (
             "fuse "  # appimages
@@ -592,6 +593,15 @@ def query_packages(package_manager: PackageManager, packages, mode="install") ->
                     logging.debug(f"'{p}' installed: {line}")
                     status[p] = "Installed"
                     break
+                elif package_manager.query[0] == 'zypper':
+                    # This might be an issue for all OS' however at least on zypper when
+                    # the "fuse3" package is installed, it thinks the fuse package is
+                    # installed. Solve this by adding whitespace to the startswith
+                    package_line_start += " "
+                    if line.strip().startswith(package_line_start) and mode == "install":  # noqa: E501
+                        logging.debug(f"'{p}' installed: {line}")
+                        status[p] = "Installed"
+                        break
                 elif line.strip().startswith(package_line_start) and mode == "install":  # noqa: E501
                     logging.debug(f"'{p}' installed: {line}")
                     status[p] = "Installed"
