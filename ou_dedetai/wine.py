@@ -458,7 +458,7 @@ def install_fonts(app: App):
             # Can hit this case with the debian package ttf-mscorefonts-installer
             logging.debug(f"Found font {f} already installed by other means, no need to install.") #noqa: E501
             continue
-        # XXX: check to make sure we actually hit this case
+        # This case doesn't happen normally, but still good to check.
         # Now we need to check to see if there is a registry key saying it's in Fonts
         # but in reality it's not.
         if registry_key == f"{f}.ttf" and (fonts_dir / f"{f}.ttf").exists():
