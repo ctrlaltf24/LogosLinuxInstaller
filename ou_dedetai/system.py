@@ -593,12 +593,17 @@ def query_packages(package_manager: PackageManager, packages, mode="install") ->
                     logging.debug(f"'{p}' installed: {line}")
                     status[p] = "Installed"
                     break
-                elif package_manager.query[0] == 'zypper':
+                elif package_manager.query[0] == 'zypper' and mode == "install":
                     # This might be an issue for all OS' however at least on zypper when
                     # the "fuse3" package is installed, it thinks the fuse package is
                     # installed. Solve this by adding whitespace to the startswith
                     package_line_start += " "
-                    if line.strip().startswith(package_line_start) and mode == "install":  # noqa: E501
+                    # zypper also has two (known) possible prefixes 'i  | '
+                    # as set in query_prefix and 'i+ | '
+                    if (
+                        line.strip().startswith(package_line_start)
+                        or line.strip().startswith(f"i+ | {p} ")
+                    ):  # noqa: E501
                         logging.debug(f"'{p}' installed: {line}")
                         status[p] = "Installed"
                         break
