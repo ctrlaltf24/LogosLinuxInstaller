@@ -4,6 +4,7 @@ import threading
 import time
 from typing import Optional, Tuple
 
+from ou_dedetai import constants
 from ou_dedetai.app import App
 from ou_dedetai.config import EphemeralConfiguration
 from ou_dedetai.system import SuperuserCommandNotFound
@@ -70,6 +71,9 @@ class CLI(App):
     def stop_installed_app(self):
         self.logos.stop()
 
+    def winetricks(self):
+        wine.run_winetricks(self, *(self.conf._overrides.wine_args or []))
+
     def wine(self):
         wine.run_wine_proc(
             self.conf.wine64_binary,
@@ -88,6 +92,9 @@ class CLI(App):
 
     def update_self(self):
         utils.update_to_latest_lli_release(self)
+
+    def get_support(self):
+        control.get_support(self)
 
     _exit_option: str = "Exit"
 
@@ -108,12 +115,21 @@ class CLI(App):
         # NOTE: this response is validated in App's .ask
         return output
 
+    def _info(self, message: str) -> None:
+        """Display information to the user"""
+        self.input_q.put((message, ['Continue?']))
+        self.input_event.set()
+        self.choice_event.wait()
+        self.choice_event.clear()
+
     def exit(self, reason: str, intended: bool = False):
         # Signal CLI.user_input_processor to stop.
         self.input_q.put(None)
         self.input_event.set()
         # Signal CLI itself to stop.
         self.running = False
+        # We always want this to return regardless of level
+        print(f"Closing {constants.APP_NAME} due to: {reason}")
         return super().exit(reason, intended)
     
     def _status(self, message: str, percent: Optional[int] = None):

@@ -4,7 +4,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from ou_dedetai.app import App
+from ou_dedetai import system
+from ou_dedetai.app import App, UserExitedFromAsk
 
 from . import constants
 from . import network
@@ -36,7 +37,6 @@ def ensure_choices(app: App):
     logging.debug(f"> Config={app.conf.__dict__}")
 
     app.status("Install is running…")
-
 
 
 def ensure_install_dirs(app: App):
@@ -113,9 +113,20 @@ def ensure_wine_executables(app: App):
     logging.debug(f"> {app.conf.wineserver_binary=}")
 
 
-def ensure_product_installer_download(app: App):
+def ensure_winetricks_executable(app: App):
     app.installer_step_count += 1
     ensure_wine_executables(app=app)
+    app.installer_step += 1
+    app.status("Ensuring winetricks executable is available…")
+
+    system.ensure_winetricks(app=app)
+
+    logging.debug(f"> {app.conf.winetricks_binary} is executable?: {os.access(app.conf.winetricks_binary, os.X_OK)}")  # noqa: E501
+
+
+def ensure_product_installer_download(app: App):
+    app.installer_step_count += 1
+    ensure_winetricks_executable(app=app)
     app.installer_step += 1
     app.status(f"Ensuring {app.conf.faithlife_product} installer is downloaded…")
 
@@ -134,7 +145,6 @@ def ensure_product_installer_download(app: App):
         shutil.copy(downloaded_file, installer.parent)
 
     logging.debug(f"> '{downloaded_file}' exists?: {Path(downloaded_file).is_file()}")  # noqa: E501
-
 
 
 def ensure_wineprefix_init(app: App):
@@ -176,9 +186,18 @@ def ensure_wineprefix_config(app: App):
     wine.set_fontsmoothing_to_rgb(app=app, wine64_binary=app.conf.wine64_binary)
 
 
-def ensure_icu_data_files(app: App):
+def ensure_fonts(app: App):
+    """Ensure the arial font is installed"""
     app.installer_step_count += 1
     ensure_wineprefix_config(app=app)
+    app.installer_step += 1
+
+    wine.install_fonts(app)
+
+
+def ensure_icu_data_files(app: App):
+    app.installer_step_count += 1
+    ensure_fonts(app=app)
     app.installer_step += 1
     app.status("Ensuring ICU data files are installed…")
     logging.debug('- ICU data files')
@@ -257,7 +276,16 @@ def ensure_launcher_shortcuts(app: App):
 def install(app: App):
     """Entrypoint for installing"""
     app.status('Installing…')
-    ensure_launcher_shortcuts(app)
+    try:
+        ensure_launcher_shortcuts(app)
+    except UserExitedFromAsk:
+        # Reset choices, it's possible that the user didn't mean to select
+        # one of the options they did - that is why they are exiting
+        app.conf.faithlife_product = None  # type: ignore[assignment]
+        app.conf.faithlife_product_version = None  # type: ignore[assignment]
+        app.conf.faithlife_product_release = None  # type: ignore[assignment]
+        app.conf.install_dir = None  # type: ignore[assignment]
+        raise
     app.status("Install Complete!", 100)
     # Trigger a config update event to refresh the UIs
     app._config_updated_event.set()
@@ -305,7 +333,7 @@ def create_wine_appimage_symlinks(app: App):
     (appdir_bindir / "winetricks").unlink(missing_ok=True)
 
     # Ensure wine executables symlinks.
-    for name in ["wine", "wine64", "wineserver"]:
+    for name in ["wine", "wine64", "wineserver", "winetricks"]:
         p = appdir_bindir / name
         p.unlink(missing_ok=True)
         p.symlink_to(f"./{app.conf.wine_appimage_link_file_name}")

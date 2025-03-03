@@ -10,8 +10,13 @@ from typing import Callable, NoReturn, Optional
 from ou_dedetai import constants
 from ou_dedetai.constants import (
     PROMPT_OPTION_DIRECTORY,
-    PROMPT_OPTION_FILE
+    PROMPT_OPTION_FILE,
+    PROMPT_OPTION_NEW_FILE
 )
+
+
+class UserExitedFromAsk(Exception):
+    """Exception thrown when the user hit cancel in an ask dialog"""
 
 
 class App(abc.ABC):
@@ -63,7 +68,7 @@ class App(abc.ABC):
         If the internal ask function returns None, the process will exit with 1
         """
         def validate_result(answer: str, options: list[str]) -> Optional[str]:
-            special_cases = set([PROMPT_OPTION_DIRECTORY, PROMPT_OPTION_FILE])
+            special_cases = set(constants.PROMPT_OPTION_SIGILS)
             # These constants have special meaning, don't worry about them to start with
             simple_options = list(set(options) - special_cases)
             # This MUST have the same indexes as above
@@ -82,6 +87,12 @@ class App(abc.ABC):
                 return answer
             if PROMPT_OPTION_DIRECTORY in options and Path(answer).is_dir():
                 return answer
+            if (
+                PROMPT_OPTION_NEW_FILE in options
+                and not Path(answer).is_dir()
+                and Path(answer).parent.is_dir()
+            ):
+                return answer
 
             # Not valid
             return None
@@ -94,16 +105,15 @@ class App(abc.ABC):
                     return option
 
         passed_options: list[str] | str = options
-        if len(passed_options) == 1 and (
-            PROMPT_OPTION_DIRECTORY in passed_options
-            or PROMPT_OPTION_FILE in passed_options
-        ):
+        if len(passed_options) == 1 and passed_options[0] in constants.PROMPT_OPTION_SIGILS: #noqa: E501
             # Set the only option to be the follow up prompt
             passed_options = options[0]
         elif passed_options is not None and self._exit_option is not None:
             passed_options = options + [self._exit_option]
 
         answer = self._ask(question, passed_options)
+        if answer is None or answer == self._exit_option:
+            raise UserExitedFromAsk
         while answer is None or validate_result(answer, options) is None:
             invalid_response = "That response is not valid, please try again."
             new_question = f"{invalid_response}\n{question}"
@@ -115,12 +125,6 @@ class App(abc.ABC):
                 # Huh? coding error, this should have been checked earlier
                 logging.critical("An invalid response slipped by, please report this incident to the developers") #noqa: E501
                 self.exit("Failed to get a valid value from user")
-
-        if answer == self._exit_option:
-            answer = None
-        
-        if answer is None:
-            self.exit("Failed to get a valid value from user")
 
         return answer
 
@@ -135,6 +139,11 @@ class App(abc.ABC):
         question = (f"{context}\n" if context else "") + question
         options = ["Yes", "No"]
         return self.ask(question, options) == "Yes"
+
+    def info(self, message: str, context: Optional[str] = None) -> None:
+        """Shares information with the user"""
+        message = (f"{context}\n" if context else "") + message
+        self._info(message)
 
     def _exit(self, reason: str, intended: bool = False) -> None:
         """Cleanup any lingering objects, per-implementation specific"""
@@ -170,7 +179,7 @@ class App(abc.ABC):
 
     @abc.abstractmethod
     def _ask(self, question: str, options: list[str] | str) -> Optional[str]:
-        """Implementation for asking a question pre-front end
+        """Implementation for asking a question per-front end
 
         Options may include ability to prompt for an additional value.
         Such as asking for one of strings or a directory.
@@ -179,6 +188,12 @@ class App(abc.ABC):
 
         Options may be a single value,
         Implementations MUST handle this single option being a follow up prompt
+        """
+        raise NotImplementedError()
+
+    @abc.abstractmethod
+    def _info(self, message: str) -> None:
+        """Implementation for displaying information to the user per-front end
         """
         raise NotImplementedError()
 
@@ -209,11 +224,11 @@ class App(abc.ABC):
             current_step_percent = percent or 0
             # We're further than the start of our current step, percent more
             installer_percent = round((self.installer_step * 100 + current_step_percent) / self.installer_step_count) # noqa: E501
-            logging.debug(f"Install {installer_percent}: {message}")
+            logging.debug(f"Install {installer_percent}%: {message}")
             self._status(message, percent=installer_percent)
         else:
             # Otherwise just print status using the progress given
-            logging.debug(f"{message}: {percent}")
+            logging.debug(f"{message}: {percent}%")
             self._status(message, percent)
         self._last_status = message
 

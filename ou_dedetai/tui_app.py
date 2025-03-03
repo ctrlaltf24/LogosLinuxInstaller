@@ -9,7 +9,7 @@ from pathlib import Path
 from queue import Queue
 from typing import Any, Optional
 
-from ou_dedetai.app import App
+from ou_dedetai.app import App, UserExitedFromAsk
 from ou_dedetai.constants import (
     PROMPT_OPTION_DIRECTORY,
     PROMPT_OPTION_FILE
@@ -30,12 +30,6 @@ from . import wine
 
 console_message = ""
 
-
-class ReturningToMainMenu(Exception):
-    """Exception raised when user returns to the main menu
-    
-    effectively stopping execution on the executing thread where this exception 
-    originated from"""
 
 
 # TODO: Fix hitting cancel in Dialog Screens; currently crashes program.
@@ -425,7 +419,8 @@ class TUI(App):
                             self.choice_q.get(),
                         )
                         if self.active_screen.screen_id == 2:
-                            self.tui_screens.pop()
+                            if self.tui_screens:
+                                self.tui_screens.pop()
 
                     if len(self.tui_screens) == 0:
                         self.active_screen = self.menu_screen
@@ -531,29 +526,37 @@ class TUI(App):
         def _install():
             try:
                 installer.install(app=self)
-                self.go_to_main_menu()
-            except ReturningToMainMenu:
+            except UserExitedFromAsk:
                 pass
+            finally:
+                self.go_to_main_menu()
+
         if choice is None or choice == "Exit":
             logging.info("Exiting installation.")
             self.tui_screens = []
             self.is_running = False
-        elif choice.startswith("Install"):
+
+        if choice in ["Install", "Advanced Install"]:
+            if self._installer_thread is not None:
+                # The install thread should have completed with UserExitedFromAsk
+                # Check just in case
+                if self._installer_thread.is_alive():
+                    raise RuntimeError("Previous install is still running")
+
             self.reset_screen()
             self.installer_step = 0
             self.installer_step_count = 0
-            if self._installer_thread is not None:
-                # The install thread should have completed with ReturningToMainMenu
-                # Check just in case
-                if self._installer_thread.is_alive():
-                    raise Exception("Previous install is still running")
-                # Reset user choices and try again!
-                self.conf.faithlife_product = None # type: ignore[assignment]
+
+            if choice.startswith("Install"):
+                logging.debug(f"{self.conf.faithlife_product=}")
+                self.conf._overrides.assume_yes = True
+            elif choice.startswith("Advanced"):
+                pass  # Stub
+
             self._installer_thread = self.start_thread(
                 _install,
                 daemon_bool=True,
             )
-
         elif choice.startswith(f"Update {constants.APP_NAME}"):
             utils.update_to_latest_lli_release(self)
         elif self.conf._raw.faithlife_product and choice == f"Run {self.conf._raw.faithlife_product}": #noqa: E501
@@ -593,6 +596,9 @@ class TUI(App):
         elif choice == "Change Color Scheme":
             self.status("Changing color scheme")
             self.conf.cycle_curses_color_scheme()
+            self.go_to_main_menu()
+        elif choice == "Get Support":
+            control.get_support(self)
             self.go_to_main_menu()
 
     def wineconfig_menu_select(self, choice):
@@ -771,7 +777,7 @@ class TUI(App):
             answer = self.ask_answer_queue.get()
 
         self.ask_answer_event.clear()
-        if answer in [PROMPT_OPTION_DIRECTORY, PROMPT_OPTION_FILE]:
+        if answer in constants.PROMPT_OPTION_SIGILS:
             self.stack_input(
                 2,
                 Queue(),
@@ -792,13 +798,28 @@ class TUI(App):
         if answer == self._exit_option:
             self.tui_screens = []
             self.reset_screen()
-            raise ReturningToMainMenu
 
         return answer
 
     def handle_ask_response(self, choice: str):
         self.ask_answer_queue.put(choice)
         self.ask_answer_event.set()
+
+    def _info(self, message: str) -> None:
+        """Display information to the user"""
+        self.ask_answer_event.clear()
+        self.stack_menu(
+            2,
+            Queue(),
+            threading.Event(),
+            message,
+            self.which_dialog_options(['Return to Main Menu']),
+        )
+
+        # Wait for user response.
+        self.ask_answer_event.wait()
+        _ = self.ask_answer_queue.get()
+        self.ask_answer_event.clear()
 
     def _status(self, message: str, percent: int | None = None):
         message = message.lstrip("\r")
@@ -890,13 +911,13 @@ class TUI(App):
                 indexing = "Run Indexing"
             labels_default = [run, indexing]
         else:
-            labels_default = ["Install Logos Bible Software"]
+            labels_default = ["Install", "Advanced Install"]
         labels.extend(labels_default)
 
         labels_support = ["Utilities →", "Wine Config →"]
         labels.extend(labels_support)
 
-        labels_options = ["Change Color Scheme"]
+        labels_options = ["Change Color Scheme", "Get Support"]
         labels.extend(labels_options)
 
         labels.append("Exit")

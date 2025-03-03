@@ -1,12 +1,13 @@
 import copy
 import os
-from typing import Optional
+import subprocess
+from typing import Any, Optional
 from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
 
-from ou_dedetai import network, utils, constants, wine
+from ou_dedetai import network, utils, constants, wine, system
 
 from ou_dedetai.constants import PROMPT_OPTION_DIRECTORY
 
@@ -85,6 +86,7 @@ class LegacyConfiguration:
         if not utils.file_exists(config_file_path):
             for legacy_config in constants.LEGACY_CONFIG_FILES:
                 if utils.file_exists(legacy_config):
+                    Path(config_file_path).parent.mkdir(parents=True, exist_ok=True)
                     os.rename(legacy_config, config_file_path)
                     break
         # This may be a config that used to be in the legacy location
@@ -328,8 +330,11 @@ class PersistentConfiguration:
     faithlife_product_logging: Optional[bool] = None
     install_dir: Optional[str] = None
     wine_binary: Optional[str] = None
-    # This is where to search for wine
+    # FIXME: Should this be stored independently of wine_binary
+    # (and potentially get out of sync), or
+    # Should we derive this value from wine_binary?
     wine_binary_code: Optional[str] = None
+    """This is the type of wine installation used"""
     backup_dir: Optional[str] = None
 
     # Color to use in curses. Either "System", "Logos", "Light", or "Dark"
@@ -404,27 +409,15 @@ class PersistentConfiguration:
             _legacy=legacy
         )
 
-    def write_json_file(self, output: dict, config_file_path: str) -> None:
-        logging.info(f"Writing config to {config_file_path}")
-        os.makedirs(os.path.dirname(config_file_path), exist_ok=True)
-        try:
-            with open(config_file_path, 'w') as config_file:
-                # Write this into a string first to avoid partial writes
-                # if encoding fails (which it shouldn't)
-                json_str = json.dumps(output, indent=4, sort_keys=True)
-                config_file.write(json_str)
-                config_file.write('\n')
-        except IOError as e:
-            logging.error(f"Error writing to file {config_file_path}: {e}")  # noqa: E501
-            # Continue, the installer can still operate even if it fails to write.
-
-    def write_config(self) -> None:
-        config_file_path = LegacyConfiguration.config_file_path()
+    def _as_dict(self) -> dict[str, Any]:
         # Copy the values into a flat structure for easy json dumping
         output = copy.deepcopy(self.__dict__)
         # Merge the legacy dictionary if present
         if self._legacy is not None:
             output |= self._legacy.__dict__
+            # Don't save DIALOG into the config
+            if os.getenv("DIALOG"):
+                del output["DIALOG"]
         
         # Remove all keys starting with _ (to remove legacy from the saved blob)
         for k in list(output.keys()):
@@ -434,7 +427,6 @@ class PersistentConfiguration:
                 or k == "CONFIG_FILE"
             ):
                 del output[k]
-
         if self.install_dir is not None:
             # Ensure all paths stored are relative to install_dir
             for k, v in output.items():
@@ -444,11 +436,31 @@ class PersistentConfiguration:
                     continue
                 if (isinstance(v, str) and v.startswith(self.install_dir)): #noqa: E501
                     output[k] = utils.get_relative_path(v, self.install_dir)
+        return output
 
+    def write_config(self) -> None:
+        config_file_path = LegacyConfiguration.config_file_path()
+        output = self._as_dict()
+
+        def write_json_file(config_file_path: str) -> None:
+            logging.info(f"Writing config to {config_file_path}")
+            os.makedirs(os.path.dirname(config_file_path), exist_ok=True)
+            try:
+                with open(config_file_path, 'w') as config_file:
+                    # Write this into a string first to avoid partial writes
+                    # if encoding fails (which it shouldn't)
+                    json_str = json.dumps(output, indent=4, sort_keys=True)
+                    config_file.write(json_str)
+                    config_file.write('\n')
+            except IOError as e:
+                logging.error(f"Error writing to file {config_file_path}: {e}")  # noqa: E501
+                # Continue, the installer can still operate even if it fails to write.
+
+        if self.install_dir is not None:
             portable_config_path = os.path.expanduser(self.install_dir + f"/{constants.BINARY_NAME}.json") #noqa: E501
-            self.write_json_file(output, portable_config_path)
+            write_json_file(portable_config_path)
 
-        self.write_json_file(output, config_file_path)
+        write_json_file(config_file_path)
 
 # Needed this logic outside this class too for before when the app is initialized
 def get_wine_prefix_path(install_dir: str) -> str:
@@ -506,6 +518,7 @@ class Config:
     # Start Cache of values unlikely to change during operation.
     # i.e. filesystem traversals
     _wine_user: Optional[str] = None
+    _wine64_path: Optional[str] = None
     _download_dir: Optional[str] = None
     _user_download_dir: Optional[str] = None
     _wine_output_encoding: Optional[str] = None
@@ -668,7 +681,7 @@ class Config:
         return self._ask_if_not_found("faithlife_product_release", question, options)
 
     @faithlife_product_release.setter
-    def faithlife_product_release(self, value: str):
+    def faithlife_product_release(self, value: Optional[str]):
         if self._raw.faithlife_product_release != value:
             self._raw.faithlife_product_release = value
             # Reset dependents
@@ -714,8 +727,22 @@ class Config:
         return self._raw.app_release_channel
 
     @property
+    def winetricks_binary(self) -> str:
+        """Download winetricks if it doesn't exist"""
+        from ou_dedetai import system
+        # Path is now static, the installer puts a symlink here if we're using appimage
+        winetricks_path = Path(self.installer_binary_dir) / "winetricks"
+    
+        system.ensure_winetricks(
+            app=self.app,
+            status_messages=False
+        )
+
+        return self._absolute_from_install_dir(winetricks_path)
+
+    @property
     def install_dir_default(self) -> str:
-        return f"{str(constants.XDG_DATA_HOME)}/{constants.BINARY_NAME}"  # noqa: E501
+        return f"{constants.DATA_HOME}/{constants.BINARY_NAME}"  # noqa: E501
 
     @property
     def install_dir(self) -> str:
@@ -728,8 +755,9 @@ class Config:
         return output
     
     @install_dir.setter
-    def install_dir(self, value: str | Path):
-        value = str(Path(value).absolute())
+    def install_dir(self, value: Optional[str | Path]):
+        if value is not None:
+            value = str(Path(value).absolute())
         if self._raw.install_dir != value:
             self._raw.install_dir = value
             # Reset cache that depends on install_dir
@@ -802,6 +830,7 @@ class Config:
             # Reset dependents
             self._raw.wine_binary_code = None
             self._overrides.wine_appimage_path = None
+            self._wine64_path = None
             self._write()
 
     @property
@@ -831,7 +860,53 @@ class Config:
 
     @property
     def wine64_binary(self) -> str:
-        return str(Path(self.wine_binary).parent / 'wine64')
+        # Use cache if available
+        if self._wine64_path:
+            return self._wine64_path
+        # Some packaging uses wine64 for the 64bit binary (like wine 10 on debian),
+        # others use wine (like wine 10.2 on debian)
+        wine64_path = Path(self.wine_binary).parent / 'wine64'
+        wine_path = Path(self.wine_binary)
+        # Prefer wine64 if it exists
+        if wine64_path.exists():
+            self._wine64_path = str(wine64_path)
+            return str(wine64_path)
+        if not wine_path.exists():
+            logging.warning(f"Wine exe path doesn't exist: {wine_path}")
+            # Return it anyways, hopefully doesn't matter.
+            # Don't cache this just in case it changes to a 32bit binary while we're
+            # running
+            return str(wine_path)
+        # Use the file binary if found to check the architecture type
+        try:
+            file_output = subprocess.check_output(
+                ["file", "-bL", str(wine_path)],
+                env=system.fix_ld_library_path(None),
+                encoding="utf-8"
+            ).strip()
+            if file_output.startswith("ELF 64-bit LSB pie executable,"):
+                # Confirmed wine binary is 64 bit
+                self._wine64_path = str(wine_path)
+            elif file_output.startswith("ELF 32-bit LSB pie executable,"):
+                # Woah there, we only have a 32 bit binary.
+                self.app.exit("Could not find a 64 bit wine binary, please install a 64bit wine") # noqa: E501
+            else:
+                # We don't want to fail here since file might behave differently on
+                # different systems or maybe different on BSD
+                # better to just let it go this time. 
+                # If it really is a problem, the user will hit other errors later on
+                # And this will be in the log when we support.
+                logging.warning(
+                    "Could not parse architecture from wine binary "
+                    f"({wine_path})"
+                    f": {file_output}\n"
+                    "Assuming it is the right architecture"
+                )
+        except Exception as e:
+            logging.warning(f"Failed to check wine binary architecture: {e}")
+        # Update the cache and return
+        self._wine64_path = str(wine_path)
+        return str(wine_path)
     
     @property
     # This used to be called WINESERVER_EXE
@@ -848,7 +923,7 @@ class Config:
             Path if wine is set to use an appimage, otherwise returns None"""
         if self._overrides.wine_appimage_path is not None:
             return Path(self._absolute_from_install_dir(self._overrides.wine_appimage_path)) #noqa: E501
-        if self.wine_binary.lower().endswith("appimage"):
+        if self.wine_binary.lower().endswith(".appimage"):
             return Path(self._absolute_from_install_dir(self.wine_binary))
         return None
     
@@ -1021,7 +1096,7 @@ class Config:
     @property
     def download_dir(self) -> str:
         if self._download_dir is None:
-            self._download_dir = str(constants.CACHE_DIR)
+            self._download_dir = constants.CACHE_DIR
         return self._download_dir
     
     @property

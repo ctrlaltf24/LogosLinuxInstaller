@@ -4,6 +4,7 @@ import curses
 import logging.handlers
 from typing import Callable, Tuple
 
+from ou_dedetai.app import UserExitedFromAsk
 from ou_dedetai.config import (
     EphemeralConfiguration, PersistentConfiguration, get_wine_prefix_path
 )
@@ -183,11 +184,19 @@ def get_parser():
         help=argparse.SUPPRESS,
     )
     cmd.add_argument(
+        '--get-support', action='store_true',
+        help='Generates a support bundle and prints out where to go for support',
+    )
+    cmd.add_argument(
         '--wine', nargs="+",
         help=(
             'run wine command'
             '; WARNING: wine will not accept user input!'
         ),
+    )
+    cmd.add_argument(
+        '--winetricks', nargs='*',
+        help="run winetricks command",
     )
     return parser
 
@@ -207,6 +216,10 @@ def parse_args(args, parser) -> Tuple[EphemeralConfiguration, Callable[[Ephemera
 
     if args.debug:
         msg.update_log_level(logging.DEBUG)
+        if not ephemeral_config.wine_debug:
+            ephemeral_config.wine_debug = constants.DEFAULT_WINEDEBUG
+        # Developers may want to consider adding +relay for excessive debug output
+        ephemeral_config.wine_debug+=',+loaddll,+pid,+threadname'
 
     if args.delete_log:
         ephemeral_config.delete_log = True
@@ -276,11 +289,13 @@ def parse_args(args, parser) -> Tuple[EphemeralConfiguration, Callable[[Ephemera
         'update_self',
         'update_latest_appimage',
         'wine',
+        'winetricks',
+        "get_support"
     ]
 
     run_action = None
     for arg in actions:
-        if getattr(args, arg):
+        if getattr(args, arg) or getattr(args, arg) == []:
             if arg == "set_appimage":
                 ephemeral_config.wine_appimage_path = getattr(args, arg)[0]
                 if not utils.file_exists(ephemeral_config.wine_appimage_path):
@@ -289,8 +304,9 @@ def parse_args(args, parser) -> Tuple[EphemeralConfiguration, Callable[[Ephemera
                 if not utils.check_appimage(ephemeral_config.wine_appimage_path):
                     e = f"{ephemeral_config.wine_appimage_path} is not an AppImage."
                     raise argparse.ArgumentTypeError(e)
-            elif arg == 'wine':
-                ephemeral_config.wine_args = getattr(args, 'wine')
+            # Re-use this variable for either wine or winetricks execution
+            elif arg == 'wine' or arg == 'winetricks':
+                ephemeral_config.wine_args = getattr(args, arg)
             run_action = cli_operation(arg)
             break
     if getattr(args, "install_app"):
@@ -424,13 +440,18 @@ def main():
     # program.
     # utils.die_if_running()
     if os.getuid() == 0 and not ephemeral_config.app_run_as_root_permitted:
-        print("Running Wine as root is highly discouraged. Use -f|--force-root if you must run as root. See https://wiki.winehq.org/FAQ#Should_I_run_Wine_as_root.3F", file=sys.stderr)  # noqa: E501
+        print("Running Wine/winetricks as root is highly discouraged. Use -f|--force-root if you must run as root. See https://wiki.winehq.org/FAQ#Should_I_run_Wine_as_root.3F", file=sys.stderr)  # noqa: E501
         sys.exit(1)
 
     # Print terminal banner
     logging.info(f"{constants.APP_NAME}, {constants.LLI_CURRENT_VERSION} by {constants.LLI_AUTHOR}.")  # noqa: E501
 
-    run(ephemeral_config, action)
+    try:
+        run(ephemeral_config, action)
+    except UserExitedFromAsk:
+        # This isn't a critical failure, the user doesn't need a traceback,
+        # they are the ones who told us to exit.
+        pass
 
 
 if __name__ == '__main__':

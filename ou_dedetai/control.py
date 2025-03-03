@@ -2,23 +2,29 @@
 They can be called from CLI, GUI, or TUI.
 """
 
+import copy
 import glob
+import json
 import logging
 import os
 import shutil
 from pathlib import Path
+from typing import Any
+import webbrowser
+from zipfile import ZipFile
 
+from ou_dedetai import constants
 from ou_dedetai import system
 from ou_dedetai.app import App
 
 
 def edit_file(config_file: str):
-    system.run_command(['xdg-open', config_file])
+    system.run_command(["xdg-open", config_file])
 
 
 def remove_install_dir(app: App):
     folder = Path(app.conf.install_dir)
-    question = f"Delete \"{folder}\" and all its contents?"
+    question = f'Delete "{folder}" and all its contents?'
     if not folder.is_dir():
         logging.info(f"Folder doesn't exist: {folder}")
         return
@@ -35,7 +41,7 @@ def remove_all_index_files(app: App):
         os.path.join(logos_dir, "Data", "*", "BibleIndex"),
         os.path.join(logos_dir, "Data", "*", "LibraryIndex"),
         os.path.join(logos_dir, "Data", "*", "PersonalBookIndex"),
-        os.path.join(logos_dir, "Data", "*", "LibraryCatalog")
+        os.path.join(logos_dir, "Data", "*", "LibraryCatalog"),
     ]
     for index_path in index_paths:
         pattern = os.path.join(index_path, "*")
@@ -62,3 +68,131 @@ def remove_library_catalog(app: App):
             logging.info(f"Removed: {file_to_remove}")
         except OSError as e:
             logging.error(f"Error removing {file_to_remove}: {e}")
+
+
+def get_support(app: App) -> str:
+    """Creates a zip file with all the information to enable support and opens support
+    """
+
+    # Save in ~/Downloads or ~/
+    output_dir = Path(os.path.expanduser("~/Downloads"))
+    if not output_dir.exists():
+        output_dir = output_dir.parent
+
+    output_path = app.ask("Where do you want to save the support zip?", [
+        str(output_dir / constants.DEFAULT_SUPPORT_FILE_NAME),
+        constants.PROMPT_OPTION_NEW_FILE,
+    ])
+
+    app.status(f"Writing support package to: {output_path}", percent=0)
+
+    if Path(output_path).exists():
+        os.remove(output_path)
+
+    with ZipFile(output_path, "x") as zip:
+        if Path(app.conf.config_file_path).exists():
+            zip.write(app.conf.config_file_path)
+        if Path(app.conf.app_log_path).exists():
+            zip.write(app.conf.app_log_path)
+        if Path(app.conf.app_wine_log_path).exists():
+            zip.write(app.conf.app_wine_log_path)
+        if Path("/etc/os-release").exists():
+            zip.write("/etc/os-release")
+        run_commands = [
+            ["glxinfo"],
+            ["free", "-h"],
+            ["inxi", "-F"],
+            ["df", "-h"]
+        ]
+
+        if app.conf._raw.wine_binary:
+            run_commands += [[app.conf._raw.wine_binary, "--version"]]
+
+        subprocess_env = copy.deepcopy(os.environ)
+        # Set LANG to enable support
+        subprocess_env["LANG"] = "en_US.UTF-8"
+
+        for command in run_commands:
+            try:
+                output = subprocess.check_output(
+                    command,
+                    text=True,
+                    env=subprocess_env
+                )
+                # This writes to the root of the zip, which is file considering this is
+                # just a support package
+                zip.writestr(f"{command[0]}.out", output)
+            except Exception as e:
+                # Some of these commands may not be found.
+                logging.debug(
+                    "Failed to gather extra information: "
+                    + " ".join(command) + ": " + str(e)
+                )
+
+        include_envs = [
+            "WINEDEBUG",
+            # Which desktop environment is running
+            "XDG_CURRENT_DESKTOP",
+            "DESKTOP_SESSION",
+            # Needed to detect lxde
+            "GDMSESSION",
+            # Wayland vs X11
+            "XDG_SESSION_TYPE",
+            "DISPLAY",
+            "LANG"
+        ]
+
+        context_to_write: dict[str, Any] = {}
+        for env in include_envs:
+            if os.getenv(env):
+                context_to_write[env] = os.getenv(env)
+
+        # Also add our DIALOG to the list
+        context_to_write["DIALOG"] = system.get_dialog()
+
+        # These aren't really envs, but still relevant. Consider a different file?
+        context_to_write["RUNMODE"] = constants.RUNMODE
+        context_to_write["CACHE_DIR"] = constants.CACHE_DIR
+        context_to_write["DATA_HOME"] = constants.DATA_HOME
+        context_to_write["CONFIG_DIR"] = constants.CONFIG_DIR
+        context_to_write["STATE_DIR"] = constants.STATE_DIR
+
+        context_to_write["network_cache"] = app.conf._network._cache._as_dict()
+        context_to_write["ephemeral_config"] = app.conf._overrides.__dict__
+        context_to_write["persistent_config"] = app.conf._raw._as_dict()
+
+        zip.writestr("context.json", json.dumps(context_to_write, indent=4))
+
+        app.status(f"Wrote support bundle to: {output_path}", percent=100)
+
+        answer = app.ask(
+            "How would you like to continue to get support?\n"
+            f"Make sure to:\n"
+            f"- Upload {output_path.replace(str(Path().home()), "~")}\n"
+            "- Describe what went wrong\n"
+            "- Describe actions you took",
+            [
+                'Launch Telegram',
+                'Launch Matrix',
+                'Open Github Issues',
+                "Show links"
+            ]
+        )
+
+        if answer == "Launch Telegram":
+            webbrowser.open(constants.TELEGRAM_LINK)
+        elif answer == "Launch Matrix":
+            webbrowser.open(constants.MATRIX_LINK)
+        elif answer == "Open Github Issues":
+            webbrowser.open(constants.REPOSITORY_NEW_ISSUE_LINK)
+        elif answer == "Show links":
+            # Use app.info to show a dialog-friendly pop-up
+            app.info(
+                "Here are the links:\n"
+                f"- Telegram: {constants.TELEGRAM_LINK}\n"
+                f"- Matrix: {constants.MATRIX_LINK}\n"
+                f"- Github Repository: {constants.REPOSITORY_LINK}\n"
+                f"- Github Issues: {constants.REPOSITORY_NEW_ISSUE_LINK}\n"
+            )
+
+    return output_path
