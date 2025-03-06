@@ -62,10 +62,13 @@ def detect_broken_install(
                 and 'FirstRunDialogWizardState="ResourceBundleSelection"' in db.app_local_preferences #noqa: E501
             ):
                 # We're in first-run state.
-                first_run = True # noqa: F841
+                first_run = True
     except Exception:
         logging.exception("Failed to check to see if we needed to recover")
         pass
+
+    if first_run:
+        logging.warning(f"Detected a failed resource download.\n{ou_dedetai.constants.SUPPORT_MESSAGE}") #noqa: E501
 
     return None
 
