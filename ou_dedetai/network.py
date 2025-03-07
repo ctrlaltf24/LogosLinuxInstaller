@@ -456,14 +456,18 @@ def _net_get(url: str, target: Optional[Path]=None, app: Optional[App] = None):
                         f.write(chunk)
                         local_size = os.fstat(f.fileno()).st_size
                         if type(total_size) is int:
-                            percent = round(local_size / total_size * 10)
+                            percent = local_size / total_size
                             # if None not in [app, evt]:
                             if app:
-                                # Show dots corresponding to show download progress
-                                # While we could use percent, it's likely to interfere
-                                # With whatever install step we are on
-                                message = "Downloading" + "." * percent + "\r"
-                                app.status(message)
+                                # This assumes that there is a 1:1 relationship between
+                                # steps and download jobs, which is presently true
+                                # If at some point in the future it is no longer true
+                                # the worst that'll happen is the progress bar will
+                                # appear to go backwards.
+                                app.status(
+                                    f"Downloading {target_props.path.name}…",
+                                    percent
+                                )
     except requests.exceptions.RequestException as e:
         logging.error(f"Error occurred during HTTP request: {e}")
         return None  # Return None values to indicate an error condition
