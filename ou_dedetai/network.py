@@ -379,7 +379,7 @@ def _net_get(url: str, target: Optional[Path]=None, app: Optional[App] = None):
     logging.debug(f"Download destination: {target}")
     target_props = FileProps(target)  # sets path and size attribs
     if app and target_props.path:
-        app.status(f"Downloading {target_props.path.name}…")
+        app.status(f"Downloading {target_props.path.name}…", 0)
     parsed_url = urlparse(url)
     domain = parsed_url.netloc  # Gets the requested domain
     url_props = UrlProps(url)  # uses requests to set headers, size, md5 attribs
