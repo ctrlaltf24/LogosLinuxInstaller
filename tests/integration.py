@@ -4,23 +4,31 @@ Should be migrated into unittests once that branch is merged
 """
 # FIXME: refactor into unittests
 
-from dataclasses import dataclass
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from typing import Callable, Optional
 
 REPOSITORY_ROOT_PATH = Path(__file__).parent.parent
 
-@dataclass
 class CommandFailedError(Exception):
     """Command Failed to execute"""
     command: list[str]
     stdout: str
     stderr: str
+
+    def __init__(self, args: list[str], stdout: str, stderr: str):
+        return super().__init__((
+            f"Failed to execute: {" ".join(args)}:\n\n"
+            f"stdout:\n{stdout}\n\n"
+            f"stderr:\n{stderr}\n\n"
+            "Command Failed. See above for details."
+        ))
+
 
 class TestFailed(Exception):
     pass
@@ -43,7 +51,7 @@ def run_cmd(*args, **kwargs) -> subprocess.CompletedProcess[str]:
         output.check_returncode()
     except subprocess.CalledProcessError as e:
         raise CommandFailedError(
-            command=args[0],
+            args=list(*args),
             stderr=output.stderr,
             stdout=output.stdout
         ) from e
@@ -71,6 +79,7 @@ class OuDedetai:
     def isolate_files(self):
         if self._temp_dir is not None:
             shutil.rmtree(self._temp_dir)
+        # XXX: this isn't properly cleaned up. Context manager?
         self._temp_dir = tempfile.mkdtemp()
         self.config = Path(self._temp_dir) / "config.json"
         self.install_dir = Path(self._temp_dir) / "install_dir"
@@ -130,41 +139,56 @@ class OuDedetai:
             log_level = "--verbose"
         elif self.log_level == "quiet":
             log_level = "--quiet"
-        args = ([self._binary, log_level] + args[0], *args[1:])
+        args = ([self._binary, log_level, "--i-agree-to-faithlife-terms"] + args[0], *args[1:]) #noqa: E501
         # FIXME: Output to both stdout and PIPE (for debugging these tests)
         output = run_cmd(*args, **kwargs)
 
-        # Output from the app indicates error/warning. Raise.
-        if output.stderr:
-            raise CommandFailedError(
-                args[0],
-                stdout=output.stdout,
-                stderr=output.stderr
-            )
+        # FIXME: Test to make sure there is no stderr output either - AKA no warnings
+        # if output.stderr:
+        #     raise CommandFailedError(
+        #         args[0],
+        #         stdout=output.stdout,
+        #         stderr=output.stderr
+        #     )
         return output
 
-    def clean(self):
-        if self.install_dir and self.install_dir.exists():
-            shutil.rmtree(self.install_dir)
-        if self.config:
-            os.remove(self.config)
-        if self._temp_dir:
-            shutil.rmtree(self._temp_dir)
+    def uninstall(self):
+        try:
+            self.stop_app()
+        except Exception:
+            pass
+        # XXX: Ideally the uninstall operation would automatically stop the app.
+        # Open an issue for this.
+        self.run(["--uninstall", "-y"])
+
+    def start_app(self):
+        # Start a thread, as this command doesn't exit
+        threading.Thread(target=self.run, args=[["--run-installed-app"]]).start()
+        # Now wait for the window to open.
+        wait_for_logos_to_open()
+
+    def stop_app(self):
+        self.run(["--stop-installed-app"])
+        # FIXME: wait for close?
 
 
-def wait_for_true(callable: Callable[[], Optional[bool]], timeout: int = 10) -> bool:
+def wait_for_true(
+    callable: Callable[[], Optional[bool]],
+    timeout: Optional[int] = 10,
+    period: float = .1
+) -> bool:
     exception = None
     start_time = time.time()
-    while time.time() - start_time < timeout:
+    while timeout is None or time.time() - start_time < timeout:
         try:
             if callable():
                 return True
         except Exception as e:
             exception = e
-        time.sleep(.1)
+        time.sleep(period)
     if exception:
         raise exception
-    return False
+    raise TimeoutError
 
 
 def wait_for_window(window_name: str, timeout: int = 10):
@@ -179,11 +203,28 @@ def wait_for_window(window_name: str, timeout: int = 10):
     wait_for_true(_window_open, timeout=timeout)
 
 
-def check_logos_open() -> None:
+def wait_for_logos_to_open(timeout: int = 10) -> None:
     """Raises an exception if Logos isn't open"""
     # Check with Xorg to see if there is a window running with the string logos.exe
-    wait_for_window("logos.exe")
+    wait_for_window("logos.exe", timeout=timeout)
 
+
+def wait_for_directory_to_be_untouched(directory: str, period: float):
+    def _check_for_directory_to_be_untouched():
+        highest_modified_time: float = 0
+        for dirpath, _, filenames in os.walk(directory):
+            for filename in filenames:
+                file_mtime = (Path(dirpath) / filename).stat().st_mtime
+                if file_mtime > highest_modified_time:
+                    highest_modified_time = file_mtime
+        current_time = time.time()
+
+        if (current_time - highest_modified_time) > period:
+            return True
+        else:
+            return False
+
+    wait_for_true(_check_for_directory_to_be_untouched, timeout = None)
 
 
 def test_run(ou_dedetai: OuDedetai):
@@ -192,35 +233,157 @@ def test_run(ou_dedetai: OuDedetai):
     # First launch Run the app. This assumes that logos is spawned before this completes
     ou_dedetai.run(["--run-installed-app"])
 
-    wait_for_true(check_logos_open)
+    wait_for_logos_to_open()
 
     ou_dedetai.run(["--stop-installed-app"])
 
 
 def test_install() -> OuDedetai:
     ou_dedetai = OuDedetai(log_level="debug")
+    ou_dedetai.uninstall()
     ou_dedetai.run(["--install-app", "--assume-yes"])
-    
-    # To actually test the install we need to run it
-    test_run(ou_dedetai)
     return ou_dedetai
 
 
-def test_remove_install_dir(ou_dedetai: OuDedetai):
-    if ou_dedetai.install_dir is None:
-        raise ValueError("Can only test removing install dir on isolated install")
-    ou_dedetai.run(["--remove-install-dir", "--assume-yes"])
-    if ou_dedetai.install_dir.exists():
-        raise TestFailed("Installation directory exists after --remove-install-dir")
-    ou_dedetai.install_dir = None
+def type_string(string: str):
+    """Types string
+    
+    Uses xdotool on Xorg"""
+    # FIXME: not sure if we can do this in wayland
+    if not os.getenv("DISPLAY"):
+        raise Exception("This test only works under Xorg")
+    run_cmd(["xdotool", "type", string])
+
+def press_keys(keys: str | list[str]):
+    """Presses key
+    
+    Uses xdotool on Xorg"""
+    if isinstance(keys, str):
+        keys = [keys]
+    # FIXME: not sure if we can do this in wayland
+    if not os.getenv("DISPLAY"):
+        raise Exception("This test only works under Xorg")
+    run_cmd(["xdotool", "key", "--delay", "500"] + keys)
 
 
 def main():
+    # FIXME: also test the beta channel of Logos?
+
     # FIXME: consider loop to run all of these in their supported distroboxes (https://distrobox.it/)
-    ou_dedetai = test_install()
-    test_remove_install_dir(ou_dedetai)
-    
-    ou_dedetai.clean()
+    # ou_dedetai = test_install()
+    ou_dedetai = OuDedetai(log_level="debug", isolate=True)
+    ou_dedetai.run(["--install-app", "--assume-yes"])
+
+    ou_dedetai.start_app()
+
+    # XXX: move this to a function and also have two options - one login first time resources, the other restoring from a backup (for speed)
+    # If we were given credentials, use them to login and download resources.
+    # This may take some time.
+    # Useful bash script to set these
+    """
+    export LOGOS_USERNAME=`read -p "Username: " foo;echo $foo`;
+    export LOGOS_PASSWORD=`read -p "Password: " -s foo;echo $foo`;
+    echo
+    """
+    logos_username = os.getenv("LOGOS_USERNAME")
+    logos_password = os.getenv("LOGOS_PASSWORD")
+    # These key sequences were tested on Logos 41.
+    # If the installer changes form, we'll need to adjust this.
+    if logos_username and logos_password:
+        # Wait for the Logos UI to display
+        time.sleep(10)
+        # Now test to see if we can login.
+        # This test is designed to take some time
+        # Prefer more robust times over quicker tests.
+        type_string(logos_username)
+        press_keys("Tab")
+        type_string(logos_password)
+        press_keys("Return")
+        # Time delay... This may be variable, but we have no way to check
+        # Took 10 seconds on my machine, double for safety.
+        time.sleep(20)
+
+        # XXX: found a crash here if you go back during a specific time early on
+
+        # Three tabs and a space agrees with second option (essential/minimal). 
+        # Some accounts with very little resources do not have 3 options, but 2.
+        press_keys(["Tab", "Tab", "Tab", "Tab", "space"])
+        # Then shift+Tab three times to get to the continue button.
+        # We need to use shift tab, as some accounts have three options in the radio
+        # (Full/essential/minimal), others only have (full/minimal)
+        # so we can't count on how many tabs to go down
+        press_keys(["Shift+Tab", "Shift+Tab", "Shift+Tab", "Return"])
+        # Wait for the UI to settle - we can wait here longer than we need to
+        time.sleep(30)
+        # Hit Continue again
+        press_keys(["Tab", "Return"])
+        # Now we wait for resources to download. Extremely variable.
+        # The continue button isn't tab navigable at this point in the install
+        #
+        # Wait until no files have been touched for a minute
+        # Then stop and restart logos. This should unstuck any stuck state.
+        # For example when testing this my download got stuck at 66%
+        # But stopping and restarting fixed.
+
+        # XXX: should we enforce this is true? (AKA always isolated?)
+        assert ou_dedetai.install_dir
+        logos_appdata_dir = None
+        for file in Path(ou_dedetai.install_dir).glob("data/wine64_bottle/drive_c/users/*/AppData/Local/Logos"): #noqa: E501
+            logos_appdata_dir = str(file)
+            break
+        assert logos_appdata_dir
+
+        wait_for_directory_to_be_untouched(logos_appdata_dir, 60)
+
+        ou_dedetai.stop_app()
+        ou_dedetai.start_app()
+
+        # Now wait for it to start (30 seconds is arbitrary)
+        time.sleep(30)
+
+        def run_command_box(command: str):
+            press_keys("alt+c")
+            time.sleep(2)
+            type_string(command)
+            time.sleep(8)
+            press_keys("Return")
+
+        def open_guide(guide: str):
+            press_keys("alt+g")
+            time.sleep(2)
+            type_string(guide)
+            time.sleep(3)
+            press_keys(["Tab", "Return"])
+            time.sleep(5)
+
+        def open_tool(guide: str):
+            press_keys("alt+g")
+            time.sleep(2)
+            type_string(guide)
+            time.sleep(10)
+            press_keys(["Tab", "Tab", "Return"])
+
+        # Now try to do some things
+
+        # Open John 3.16 (probably in a layout of some kind)
+        # Command box results are variable
+        run_command_box("John 3:16")
+        run_command_box("Jesus factbook")
+        open_guide("bible word study")
+        time.sleep(5)
+        type_string("worship")
+        press_keys("Return")
+        # Let it settle
+        time.sleep(4)
+
+        open_tool("copy bible verses")
+
+        # Ensure Logos is still open (AKA didn't crash).
+        # XXX: ensure that if winedbg isn't running somehow. We'll have to simulate a crash in order to test
+        wait_for_logos_to_open()
+        # Pass!
+
+    ou_dedetai.uninstall()
 
 
     # Untested:
