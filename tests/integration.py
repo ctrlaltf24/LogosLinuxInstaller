@@ -7,10 +7,10 @@ Should be migrated into unittests once that branch is merged
 import abc
 import os
 from pathlib import Path
+import tempfile
 import psutil
 import shutil
 import subprocess
-import tempfile
 import threading
 import time
 from typing import Callable, Optional, Union
@@ -94,7 +94,7 @@ class OuDedetai:
         if self._temp_dir is not None:
             shutil.rmtree(self._temp_dir)
         # FIXME: this isn't properly cleaned up when tests fail. Context manager?
-        self._temp_dir = tempfile.mkdtemp()
+        self._temp_dir = tempfile.mkdtemp(prefix="oudedetai_test_")
         self.config = Path(self._temp_dir) / "config.json"
         self.install_dir = Path(self._temp_dir) / "install_dir"
 
@@ -145,6 +145,8 @@ class OuDedetai:
         env["PATH"] = os.environ.get("PATH", "")
         env["HOME"] = os.environ.get("HOME", "")
         env["DISPLAY"] = os.environ.get("DISPLAY", "")
+        env["logos_release_channel"] = os.environ.get("logos_release_channel", "stable")
+        env["FLPRODUCT"] = os.environ.get("FLPRODUCT", "Logos")
         kwargs["env"] = env
         log_level = ""
         if self.log_level == "debug":
@@ -175,14 +177,14 @@ class OuDedetai:
         # Open an issue for this.
         self.run(["--uninstall", "-y"])
 
-    def start_app(self) -> "Logos":
+    def start_app(self) -> "FaithLifeProduct":
         # Start a thread, as this command doesn't exit
         threading.Thread(target=self.run, args=[["--run-installed-app"]]).start()
         # There is only one thing we need to check generally for logos.
         # Consider making display_server a paramater in the future if
         # this needs to be something else.
         display_server = DisplayServer.detect(raise_if_winedbg_is_running)
-        logos = Logos(self, display_server)
+        logos = FaithLifeProduct(self, display_server)
         # Now wait for the window to open before returning the open window.
         wait_for_true(logos.is_window_open)
         display_server.window_name = logos.window_name()
@@ -191,6 +193,7 @@ class OuDedetai:
         return logos
 
     def stop_app(self):
+        # FIXME: this didn't close Verbum (well it does after a click)
         self.run(["--stop-installed-app"])
         # FIXME: wait for close?
 
@@ -198,10 +201,8 @@ class OuDedetai:
 # FIXME: test this against Verbum too. It should be the same.
 # If not, make this an abstract class w/overrides.
 
-class Logos:
-    """Class for interacting with Logos
-    
-    May also work for Verbum, tested against Logos"""
+class FaithLifeProduct:
+    """Class for interacting with Logos/Verbum"""
     _ou_dedetai: OuDedetai
     _display_server: "DisplayServer"
 
@@ -288,9 +289,39 @@ class Logos:
         return False
     
     @classmethod
-    def window_name(_cls):
-        # FIXME: This will need to be overridden for Verbum
-        return "Logos Bible Study"
+    def name(cls) -> str:
+        """Returns the target faithlife product
+        
+        reads FLPRODUCT
+        
+        returns: Verbum or Logos"""
+        faithlife_product = os.environ.get("FLPRODUCT", "Logos")
+        if faithlife_product not in ["Logos", "Verbum"]:
+            raise ValueError(f"Unknown Faithlife product: {faithlife_product}")
+        return faithlife_product
+
+    @classmethod
+    def window_name(cls):
+        faithlife_product = cls.name()
+        if faithlife_product == "Logos":
+            return "Logos Bible Study"
+        elif faithlife_product == "Verbum":
+            return "Verbum"
+
+    @property
+    def appdata_dir(self) -> str:
+        """Returns the appdata dir of the install product
+        
+        raises a FileNotFoundError if it cannot be found"""
+        assert self._ou_dedetai.install_dir, "The test must start in isolated mode so we know where the install dir is reliably" #noqa: E501
+        appdata_dir = None
+        glob = f"data/wine64_bottle/drive_c/users/*/AppData/Local/{self.name()}" #noqa: E501
+        for file in Path(self._ou_dedetai.install_dir).glob(glob): #noqa: E501
+            appdata_dir = str(file)
+            break
+        if not appdata_dir:
+            raise FileNotFoundError("Failed to find product's appdata dir. Did installation succeed?") # noqa: E501
+        return appdata_dir
 
 def wait_for_true(
     callable: Callable[[], Optional[bool]],
@@ -619,16 +650,20 @@ def test_first_run_resource_download(
     time.sleep(20)
 
     # Three tabs and a space agrees with second option (essential/minimal). 
-    # Some accounts with very little resources do not have 3 options, but 2.
-    logos.press_keys([KeyCodeTab()] *4 + [KeyCodeSpace()])
+    # On Logos some accounts with very little resources do not have 3 options, but 2.
+    # On Verbum this takes an extra Tab, and always has three options Full/Quick/Minimal
+    logos.press_keys([KeyCodeTab()] *4)
+    logos.press_keys(KeyCodeSpace())
     # Then shift+Tab three times to get to the continue button.
     # We need to use shift tab, as some accounts have three options in the radio
     # (Full/essential/minimal), others only have (full/minimal)
     # so we can't count on how many tabs to go down
     logos.press_keys(
-        [KeyCodeModified(KeyCodeShift(), KeyCodeTab())] *3 
-        + [KeyCodeReturn()]
+        [KeyCodeModified(KeyCodeShift(), KeyCodeTab())] *3
     )
+    # if logos.faithlife_product() == "Verbum": #XXX: It looks like this is required if there are three options. Can we just require an account with three options? And if that isn't the case login to Verbum?
+    logos.press_keys(KeyCodeModified(KeyCodeShift(), KeyCodeTab()))
+    logos.press_keys(KeyCodeReturn())
     # Wait for the UI to settle - we can wait here longer than we need to
     time.sleep(30)
     # Hit Continue again
@@ -641,14 +676,7 @@ def test_first_run_resource_download(
     # For example when testing this my download got stuck at 66%
     # But stopping and restarting fixed.
 
-    assert ou_dedetai.install_dir, "The test must start in isolated mode so we know where the install dir is realiably" #noqa: E501
-    logos_appdata_dir = None
-    for file in Path(ou_dedetai.install_dir).glob("data/wine64_bottle/drive_c/users/*/AppData/Local/Logos"): #noqa: E501
-        logos_appdata_dir = str(file)
-        break
-    assert logos_appdata_dir
-
-    wait_for_directory_to_be_untouched(logos_appdata_dir, 60)
+    wait_for_directory_to_be_untouched(logos.appdata_dir, 60)
 
     logos.close()
 
@@ -691,6 +719,12 @@ def test_logos_features(ou_dedetai: OuDedetai):
     # Let it settle
     time.sleep(4)
 
+    logos.open_guide("passage guide")
+    logos.type_string("John 3:16")
+    logos.press_keys(KeyCodeReturn())
+    # Let it settle
+    time.sleep(4)
+
     logos.open_tool("copy bible verses")
 
     # Now ensure the Logos window is still open
@@ -705,6 +739,13 @@ def test_logos_crash_is_detected_by_test_code(ou_dedetai: OuDedetai):
     
     This scenario forces a known-crash - in this case a missing arial font and opening
     copy bible verses - to ensure our code detects that Logos did indeed crash."""
+
+    # FIXME: Find a way to crash Verbum too
+    # For some reason this doesn't crash Verbum, but crashes logos.
+    if FaithLifeProduct.name() == "Verbum":
+        print("Skipping test (doesn't work on Verbum)")
+        return
+
     # Now check to see if our test code properly detects a crash
     logos = ou_dedetai.start_app()
 
@@ -717,6 +758,8 @@ def test_logos_crash_is_detected_by_test_code(ou_dedetai: OuDedetai):
     fake_font_dir = font_dir + "_"
     shutil.move(font_dir, fake_font_dir)
 
+    # This also causes a crash on Logos, but this tool doesn't appear to be working
+    # In the latest Verbum
     logos.open_tool("copy bible verses")
     # Let it settle
     time.sleep(2)
@@ -738,7 +781,7 @@ def test_logos_crash_is_detected_by_test_code(ou_dedetai: OuDedetai):
 
     logos.close()
 
-
+# Xephyr is very useful for testing this - it is a nested Xorg server
 def main():
     # FIXME: also test the beta channel of Logos?
     # FIXME: also test verbum
