@@ -6,6 +6,7 @@ Should be migrated into unittests once that branch is merged
 
 import os
 from pathlib import Path
+import psutil
 import shutil
 import subprocess
 import tempfile
@@ -224,7 +225,7 @@ def wait_for_directory_to_be_untouched(directory: str, period: float):
         else:
             return False
 
-    wait_for_true(_check_for_directory_to_be_untouched, timeout = None)
+    wait_for_true(_check_for_directory_to_be_untouched, timeout=None, period=period / 2)
 
 
 def test_run(ou_dedetai: OuDedetai):
@@ -245,10 +246,31 @@ def test_install() -> OuDedetai:
     return ou_dedetai
 
 
+class WineDBGRunning(Exception):
+    """Exception to keep track of when we noticed winedbg is running
+    
+    Useful as an exeception as it can be caught and ignored if desired."""
+
+
+def raise_if_winedbg_is_running():
+    """Raises exception if winedbg was found to be running"""
+
+    if 'winedbg' in [proc.name() for proc in psutil.process_iter(['name'])]:
+        raise WineDBGRunning
+
+
+def pre_input_tasks():
+    """It's possible sending keystrokes could close dialogs
+    
+    We want to check a couple things before sending new a keypress"""
+    raise_if_winedbg_is_running()
+
+
 def type_string(string: str):
     """Types string
     
     Uses xdotool on Xorg"""
+    pre_input_tasks()
     # FIXME: not sure if we can do this in wayland
     if not os.getenv("DISPLAY"):
         raise Exception("This test only works under Xorg")
@@ -258,12 +280,15 @@ def press_keys(keys: str | list[str]):
     """Presses key
     
     Uses xdotool on Xorg"""
+    pre_input_tasks()
     if isinstance(keys, str):
         keys = [keys]
     # FIXME: not sure if we can do this in wayland
     if not os.getenv("DISPLAY"):
         raise Exception("This test only works under Xorg")
-    run_cmd(["xdotool", "key", "--delay", "500"] + keys)
+    for key in keys:
+        run_cmd(["xdotool", "key", key])
+        time.sleep(.5)
 
 
 def main():
@@ -305,6 +330,7 @@ def main():
 
         # XXX: found a crash here if you go back during a specific time early on
 
+
         # Three tabs and a space agrees with second option (essential/minimal). 
         # Some accounts with very little resources do not have 3 options, but 2.
         press_keys(["Tab", "Tab", "Tab", "Tab", "space"])
@@ -342,14 +368,14 @@ def main():
         time.sleep(30)
 
         def run_command_box(command: str):
-            press_keys("alt+c")
+            press_keys(["Escape", "alt+c"])
             time.sleep(2)
             type_string(command)
             time.sleep(8)
             press_keys("Return")
 
         def open_guide(guide: str):
-            press_keys("alt+g")
+            press_keys(["Escape", "alt+g"])
             time.sleep(2)
             type_string(guide)
             time.sleep(3)
@@ -357,7 +383,7 @@ def main():
             time.sleep(5)
 
         def open_tool(guide: str):
-            press_keys("alt+g")
+            press_keys(["Escape", "alt+t"])
             time.sleep(2)
             type_string(guide)
             time.sleep(10)
@@ -368,7 +394,17 @@ def main():
         # Open John 3.16 (probably in a layout of some kind)
         # Command box results are variable
         run_command_box("John 3:16")
+        # Let it settle
+        time.sleep(10)
         run_command_box("Jesus factbook")
+
+        # XXX: move this out to a negative test, and switch it from a delte to a move so we can put it back.
+        # XXX: Sabotage! For the sake of a crash. Still needs testing to force a crash. 
+        # We may want to have a negative test for this to ensure our logic to detect
+        # logos idn't crash still functions later on in time.
+        # This may or may not work as the data might already be loaded.
+        shutil.rmtree(f"{ou_dedetai.install_dir}/data/wine64_bottle/drive_c/windows/Fonts/")
+
         open_guide("bible word study")
         time.sleep(5)
         type_string("worship")
@@ -378,9 +414,17 @@ def main():
 
         open_tool("copy bible verses")
 
-        # Ensure Logos is still open (AKA didn't crash).
-        # XXX: ensure that if winedbg isn't running somehow. We'll have to simulate a crash in order to test
-        wait_for_logos_to_open()
+        # Now ensure the Logos window is still open
+        # AND there is no winedbg process running (this is checked on input too)
+        try:
+            wait_for_logos_to_open()
+            raise_if_winedbg_is_running()
+        except Exception:
+            print("Test failed")
+            raise
+
+        print("Logos didn't crash while testing")
+        ou_dedetai.stop_app()
         # Pass!
 
     ou_dedetai.uninstall()
