@@ -4,6 +4,7 @@ Should be migrated into unittests once that branch is merged
 """
 # FIXME: refactor into unittests
 
+import abc
 import os
 from pathlib import Path
 import psutil
@@ -12,22 +13,34 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 REPOSITORY_ROOT_PATH = Path(__file__).parent.parent
 
 class CommandFailedError(Exception):
     """Command Failed to execute"""
-    command: list[str]
+    cmd_args: list[str]
     stdout: str
     stderr: str
 
     def __init__(self, args: list[str], stdout: str, stderr: str):
+        self.cmd_args = args
+        self.stdout = stdout
+        self.stderr = stderr
         return super().__init__((
             f"Failed to execute: {" ".join(args)}:\n\n"
             f"stdout:\n{stdout}\n\n"
             f"stderr:\n{stderr}\n\n"
             "Command Failed. See above for details."
+        ))
+
+class MissingSystemBinary(Exception):
+    """Failed to find a binary needed to run tests"""
+    def __init__(self, command: str):
+        super().__init__((
+            "Failed to find command: "
+            + command
+            + "Please find and install it via your package manager."
         ))
 
 
@@ -162,16 +175,122 @@ class OuDedetai:
         # Open an issue for this.
         self.run(["--uninstall", "-y"])
 
-    def start_app(self):
+    def start_app(self) -> "Logos":
         # Start a thread, as this command doesn't exit
         threading.Thread(target=self.run, args=[["--run-installed-app"]]).start()
-        # Now wait for the window to open.
-        wait_for_logos_to_open()
+        # There is only one thing we need to check generally for logos.
+        # Consider making display_server a paramater in the future if
+        # this needs to be something else.
+        display_server = DisplayServer.detect(raise_if_winedbg_is_running)
+        logos = Logos(self, display_server)
+        # Now wait for the window to open before returning the open window.
+        wait_for_true(logos.is_window_open)
+        display_server.window_name = logos.window_name()
+        # Wait for a bit to ensure the Logos window is actually open
+        time.sleep(20)
+        return logos
 
     def stop_app(self):
         self.run(["--stop-installed-app"])
         # FIXME: wait for close?
 
+
+# XXX: test this against Verbum too. It should be the same.
+# If not, make this an abstract class w/overrides.
+
+class Logos:
+    """Class for interacting with Logos
+    
+    May also work for Verbum, tested against Logos"""
+    _ou_dedetai: OuDedetai
+    _display_server: "DisplayServer"
+
+    def __init__(self, ou_dedetai: OuDedetai, display_server: "DisplayServer"):
+        self._ou_dedetai = ou_dedetai
+        self._display_server = display_server
+
+    def run_command_box(self, command: str):
+        """Given an open Logos, hit the required keys
+        to execute in the command box
+        """
+        self._display_server.press_keys([
+            KeyCodeEscape(),
+            KeyCodeModified(KeyCodeAlt(), KeyCodeCharacter("c"))
+        ])
+        time.sleep(2)
+        self._display_server.type_string(command)
+        time.sleep(8)
+        self._display_server.press_keys(KeyCodeReturn())
+        time.sleep(10)
+
+    def open_guide(self, guide: str):
+        """Given an open Logos, hit the required keys
+        to open a guide
+        """
+        self._display_server.press_keys([
+            KeyCodeEscape(),
+            KeyCodeModified(KeyCodeAlt(), KeyCodeCharacter("g"))
+        ])
+        time.sleep(2)
+        self._display_server.type_string(guide)
+        time.sleep(3)
+        self._display_server.press_keys([KeyCodeTab(), KeyCodeReturn()])
+        time.sleep(5)
+
+    def open_tool(self, guide: str):
+        """Given an open Logos, hit the required keys
+        to open a tool
+        """
+        self._display_server.press_keys([
+            KeyCodeEscape(),
+            KeyCodeModified(KeyCodeAlt(), KeyCodeCharacter("t"))
+        ])
+        time.sleep(2)
+        self._display_server.type_string(guide)
+        time.sleep(4)
+        self._display_server.press_keys([
+            KeyCodeTab(),
+            KeyCodeTab(),
+            KeyCodeReturn(),
+        ])
+        time.sleep(4)
+
+    def type_string(self, string: str):
+        """Types string
+        
+        Calls pre_input_tasks before running"""
+        self._display_server.type_string(string)
+
+    def press_keys(self, keys: Union["KeyCode", list["KeyCode"]]):
+        """Presses key(s)
+        
+        Calls pre_input_tasks before running"""
+        self._display_server.press_keys(keys)
+    
+    def is_window_open(self) -> bool:
+        """Checks to see if logos is open"""
+        return self._display_server.is_window_open(self.window_name())
+
+    def close(self):
+        """Close Logos"""
+        self._ou_dedetai.stop_app()
+
+    def is_crashed(self) -> bool:
+        """Checks to see if Logos crashed by:
+        
+        - If the window is closed
+        - winedbg process is running
+        """
+        if is_winedbg_is_running():
+            return True
+        if not self.is_window_open():
+            return True
+        return False
+    
+    @classmethod
+    def window_name(_cls):
+        # FIXME: This will need to be overridden for Verbum
+        return "Logos Bible Study"
 
 def wait_for_true(
     callable: Callable[[], Optional[bool]],
@@ -191,24 +310,248 @@ def wait_for_true(
         raise exception
     raise TimeoutError
 
+class KeyCode(abc.ABC):
+    """Display Server Independent KeyCode
+    
+    Purpose of this class is two-fold:
+    - Display server independent
+    - Preventing casing errors - ex. alt is lowercase on X11 and Return is capital
+    """
 
-def wait_for_window(window_name: str, timeout: int = 10):
-    """Waits for an Xorg window to open, raises exception if it doesn't"""
-    def _window_open():
-        output = run_cmd(["xwininfo", "-tree", "-root"])
-        if output.stderr:
-            raise Exception(f"xwininfo failed: {output.stdout}\n{output.stderr}")
-        if window_name not in output.stdout:
-            raise Exception(f"Could not find {window_name} in {output.stdout}")
-        return True
-    wait_for_true(_window_open, timeout=timeout)
+    @abc.abstractmethod
+    def x11_code(self) -> str:
+        """Returns representation in X11"""
+        raise NotImplementedError
+
+    # FIXME: Will need to add a second one if/when wayland support is added to this test
+    # suite.
+
+class KeyCodeModifier(KeyCode):
+    """KeyCode that specifically a modifier"""
+
+class KeyCodeModified(KeyCode):
+    """Keypress that's modified by some number of modifiers"""
+    modifiers: list[KeyCodeModifier]
+    key: KeyCode
+
+    def __init__(
+        self,
+        modifiers: KeyCodeModifier | list[KeyCodeModifier],
+        key: KeyCode
+    ):
+        if isinstance(modifiers, KeyCode):
+            self.modifiers = [modifiers]
+        else:
+            self.modifiers = modifiers
+        self.key = key
+
+    def x11_code(self):
+        return "+".join(
+            [key.x11_code() for key in self.modifiers] 
+            + [self.key.x11_code()]
+        )
+
+class KeyCodeCharacter(KeyCode):
+    """Key code that's just a character"""
+    char: str
+    """Character. Stored as a string with length of one"""
+
+    def __init__(self, char: str):
+        if len(char) != 1:
+            raise ValueError("Expected Key to be one character")
+        self.char = char
+    
+    def x11_code(self):
+        return self.char
+
+class KeyCodeReturn(KeyCode):
+    """Return Key"""
+
+    def x11_code(self):
+        return "Return"
+
+class KeyCodeTab(KeyCode):
+    """Tab Key"""
+
+    def x11_code(self):
+        return "Tab"
+
+class KeyCodeAlt(KeyCodeModifier):
+    """Alt Key"""
+
+    def x11_code(self):
+        return "alt"
+
+class KeyCodeShift(KeyCodeModifier):
+    """Shift Key"""
+
+    def x11_code(self):
+        return "shift"
+
+class KeyCodeCtrl(KeyCodeModifier):
+    """Ctrl Key"""
+
+    def x11_code(self):
+        return "ctrl"
+
+class KeyCodeSpace(KeyCode):
+    """Space Key"""
+
+    def x11_code(self):
+        return "space"
+
+class KeyCodeEscape(KeyCode):
+    """Escape Key"""
+
+    def x11_code(self):
+        return "Escape"
+
+class DisplayServer(abc.ABC):
+    """Abstract class for a display server. Like Xorg or Wayland"""
+
+    pre_input_tasks: Callable[[], None]
+    """Tasks to run before sending user input.
+    
+    Some things like error dialogs may be dismissed if we interact with the screen
+    check these things before continuing.
+    """
+    window_name: Optional[str]
+    """Window name to scope requests to"""
+
+    def __init__(
+        self,
+        pre_input_tasks: Callable[[], None]
+    ):
+        self.pre_input_tasks = pre_input_tasks
+    
+    @classmethod
+    def detect(cls, pre_input_tasks: Callable[[], None]) -> "DisplayServer":
+        """Detects the current running Display server and returns and interface
+        for interacting with it
+        """
+        xdg_session_type = os.getenv("XDG_SESSION_TYPE")
+        # Check to see if DISPLAY is set anyways
+        if xdg_session_type is None and os.getenv("DISPLAY") is not None:
+            xdg_session_type = "x11"
+        if xdg_session_type == "wayland":
+            raise NotImplementedError(
+                "Tests are not made to run under wayland "
+                "because key presses are harder to send."
+            )
+        elif xdg_session_type == "x11":
+            if not os.getenv("DISPLAY"):
+                raise Exception("System reported x11 but didn't find $DISPLAY")
+            return X11DisplayServer(pre_input_tasks)
+        else:
+            raise NotImplementedError(
+                "Failed to detect which display server is being used."
+            )
+
+    @abc.abstractmethod
+    def type_string(_cls, string: str):
+        """Types string
+        
+        Calls pre_input_tasks before running"""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def press_keys(_cls, keys: KeyCode | list[KeyCode]):
+        """Presses key"""
+        raise NotImplementedError
+    
+    @abc.abstractmethod
+    def is_window_open(_cls, window_name: str) -> bool:
+        """Checks to see if there is a window open with the name"""
+        raise NotImplementedError
 
 
-def wait_for_logos_to_open(timeout: int = 10) -> None:
-    """Raises an exception if Logos isn't open"""
-    # Check with Xorg to see if there is a window running with the string logos.exe
-    wait_for_window("logos.exe", timeout=timeout)
+class X11DisplayServer(DisplayServer):
+    """Xorg (aka X11) display server"""
 
+    _window_id: Optional[str]
+    """Window to scope all keypresses to"""
+
+
+    def __init__(
+        self,
+        pre_input_tasks: Callable[[], None]
+    ):
+        super().__init__(pre_input_tasks)
+
+        # Check system binaries we need for this implementation
+        for binary in ["xdotool"]:
+            if not shutil.which(binary):
+                raise MissingSystemBinary(binary)
+            
+        self._window_id = None
+        
+        # Try setting the window id
+        try:
+            self._window_id = self._search_for_window(self.window_name)
+        except Exception:
+            pass
+    
+    def _xdotool(
+        self,
+        args: list[str]
+    ) -> subprocess.CompletedProcess[str]:
+        """Runs xdotool
+        
+        Automatically handles the case where the window name changes
+        """
+        def _run() -> subprocess.CompletedProcess[str]:
+            args_to_run = ["xdotool"]
+            # If we haven't found our window id yet, try to set it
+            if not self._window_id and self.window_name:
+                self._window_id = self._search_for_window(self.window_name)
+            
+            if len(args) > 0:
+                args_to_run += [args[0]]
+                # Check to see if our subcommand is one with the --window parameter
+                if self._window_id and args[0] in ["key", "type"]:
+                    args_to_run += ["--window", self._window_id]
+            
+                args_to_run += args[1:]
+            return run_cmd(args_to_run)
+        # Run once, if fail with bad window try getting the window again and trying
+        # one last time
+        try:
+            return _run()
+        except CommandFailedError as e:
+            # Check to see if we failed due to bad window - if so retry with new window
+            if "X Error of failed request:  BadWindow (invalid Window parameter)" in e.stderr: #noqa: E501
+                # Reset bad window
+                self._window_id = None
+                # try again (this function will set self._window_id)
+                return _run()
+            else:
+                raise
+
+    def type_string(self, string):
+        """Uses xdotool to type a string"""
+        self.pre_input_tasks()
+        self._xdotool(["type", string])
+
+    def press_keys(self, keys: KeyCode | list[KeyCode]):
+        """Uses xdotool to press keys"""
+        self.pre_input_tasks()
+        if isinstance(keys, KeyCode):
+            keys = [keys]
+        x11_keys = [key.x11_code() for key in keys]
+        for key in x11_keys:
+            self._xdotool(["key", key])
+            time.sleep(.5)
+
+    def _search_for_window(self, window_name) -> str:
+        return run_cmd(["xdotool", "search", "--name", window_name]).stdout.strip()
+
+    def set_window(self, window_name: str):
+        """Scope keypresses to window"""
+        self._window_id = self._search_for_window(window_name)
+
+    def is_window_open(self, window_name: str) -> bool:
+        output = self._search_for_window(window_name)
+        return len(output) > 0
 
 def wait_for_directory_to_be_untouched(directory: str, period: float):
     def _check_for_directory_to_be_untouched():
@@ -229,14 +572,16 @@ def wait_for_directory_to_be_untouched(directory: str, period: float):
 
 
 def test_run(ou_dedetai: OuDedetai):
-    ou_dedetai.run(["--stop-installed-app"])
+    ou_dedetai.stop_app()
 
     # First launch Run the app. This assumes that logos is spawned before this completes
-    ou_dedetai.run(["--run-installed-app"])
+    logos = ou_dedetai.start_app()
 
-    wait_for_logos_to_open()
+    # Preform the test - is the window open?
+    wait_for_true(logos.is_window_open)
 
-    ou_dedetai.run(["--stop-installed-app"])
+    # Cleanup after the test.
+    ou_dedetai.stop_app()
 
 
 def test_install() -> OuDedetai:
@@ -246,62 +591,164 @@ def test_install() -> OuDedetai:
     return ou_dedetai
 
 
+def test_first_run_resource_download(
+    ou_dedetai: OuDedetai,
+    logos_username: str,
+    logos_password: str
+):
+    """Starts Logos and goes through the first run dialog with a given username/password
+
+    Code was written for Logos v40, it may not function for newer/older versions if
+    Logos changes the format of the first run dialog as it sends keyboard presses.
+
+    Requires an isolated ou_dedetai
+    """
+    logos = ou_dedetai.start_app()
+
+    # Wait for the Logos UI to display
+    # time.sleep(10)
+    # Now test to see if we can login.
+    # This test is designed to take some time
+    # Prefer more robust times over quicker tests.
+    logos.type_string(logos_username)
+    logos.press_keys(KeyCodeTab())
+    logos.type_string(logos_password)
+    logos.press_keys(KeyCodeReturn())
+    # Time delay... This may be variable, but we have no way to check
+    # Took 10 seconds on my machine, double for safety.
+    time.sleep(20)
+
+    # Three tabs and a space agrees with second option (essential/minimal). 
+    # Some accounts with very little resources do not have 3 options, but 2.
+    logos.press_keys([KeyCodeTab()] *4 + [KeyCodeSpace()])
+    # Then shift+Tab three times to get to the continue button.
+    # We need to use shift tab, as some accounts have three options in the radio
+    # (Full/essential/minimal), others only have (full/minimal)
+    # so we can't count on how many tabs to go down
+    logos.press_keys(
+        [KeyCodeModified(KeyCodeShift(), KeyCodeTab())] *3 
+        + [KeyCodeReturn()]
+    )
+    # Wait for the UI to settle - we can wait here longer than we need to
+    time.sleep(30)
+    # Hit Continue again
+    logos.press_keys([KeyCodeTab(), KeyCodeReturn()])
+    # Now we wait for resources to download. Extremely variable.
+    # The continue button isn't tab navigable at this point in the install
+    #
+    # Wait until no files have been touched for a minute
+    # Then stop and restart logos. This should unstuck any stuck state.
+    # For example when testing this my download got stuck at 66%
+    # But stopping and restarting fixed.
+
+    assert ou_dedetai.install_dir, "The test must start in isolated mode so we know where the install dir is realiably" #noqa: E501
+    logos_appdata_dir = None
+    for file in Path(ou_dedetai.install_dir).glob("data/wine64_bottle/drive_c/users/*/AppData/Local/Logos"): #noqa: E501
+        logos_appdata_dir = str(file)
+        break
+    assert logos_appdata_dir
+
+    wait_for_directory_to_be_untouched(logos_appdata_dir, 60)
+
+    logos.close()
+
 class WineDBGRunning(Exception):
     """Exception to keep track of when we noticed winedbg is running
     
     Useful as an exeception as it can be caught and ignored if desired."""
 
 
+def is_winedbg_is_running() -> bool:
+    if 'winedbg' in [proc.name() for proc in psutil.process_iter(['name'])]:
+        return True
+    return False
+
 def raise_if_winedbg_is_running():
     """Raises exception if winedbg was found to be running"""
-
-    if 'winedbg' in [proc.name() for proc in psutil.process_iter(['name'])]:
+    if is_winedbg_is_running():
         raise WineDBGRunning
 
-
-def pre_input_tasks():
-    """It's possible sending keystrokes could close dialogs
+def test_logos_features(ou_dedetai: OuDedetai):
+    """Tests various logos features to ensure it doesn't crash
     
-    We want to check a couple things before sending new a keypress"""
-    raise_if_winedbg_is_running()
+    We can't confirm the features function in an automated fashion
+    but we can check to see if they crash the application.
+    """
+    logos = ou_dedetai.start_app()
+    # Now try to do some things
 
+    # FIXME: after moving this to unittests, these should be different test cases
 
-def type_string(string: str):
-    """Types string
+    # Open John 3.16 in the preferred bible
+    logos.run_command_box("John 3:16")
+    # Let it settle
+    time.sleep(2)
+    logos.run_command_box("Jesus factbook")
+
+    logos.open_guide("bible word study")
+    logos.type_string("worship")
+    logos.press_keys(KeyCodeReturn())
+    # Let it settle
+    time.sleep(4)
+
+    logos.open_tool("copy bible verses")
+
+    # Now ensure the Logos window is still open
+    if logos.is_crashed():
+        raise TestFailed("Logos Crashed.")
+
+    print("Logos opened all tools while staying open")
+    logos.close()
+
+def test_logos_crash_is_detected_by_test_code(ou_dedetai: OuDedetai):
+    """It is very important to ensure that our test code is actually testing anything
     
-    Uses xdotool on Xorg"""
-    pre_input_tasks()
-    # FIXME: not sure if we can do this in wayland
-    if not os.getenv("DISPLAY"):
-        raise Exception("This test only works under Xorg")
-    run_cmd(["xdotool", "type", string])
+    This scenario forces a known-crash - in this case a missing arial font and opening
+    copy bible verses - to ensure our code detects that Logos did indeed crash."""
+    # Now check to see if our test code properly detects a crash
+    logos = ou_dedetai.start_app()
 
-def press_keys(keys: str | list[str]):
-    """Presses key
+    assert ou_dedetai.install_dir, "This test only supports isolated installs"
+    # Sabotage! For the sake of a crash. Still needs testing to force a crash. 
+    # We may want to have a negative test for this to ensure our logic to detect
+    # logos idn't crash still functions later on in time.
+    # This may or may not work as the data might already be loaded.
+    font_dir = f"{ou_dedetai.install_dir}/data/wine64_bottle/drive_c/windows/Fonts"
+    fake_font_dir = font_dir + "_"
+    shutil.move(font_dir, fake_font_dir)
+
+    logos.open_tool("copy bible verses")
+    # Let it settle
+    time.sleep(2)
+
+    # Cleanup after tests
+    shutil.move(fake_font_dir, font_dir)
+
+    # Ensure that Logos crashed
+    if not logos.is_crashed():
+        raise TestFailed("Logos should have crashed from a missing arial font.")
     
-    Uses xdotool on Xorg"""
-    pre_input_tasks()
-    if isinstance(keys, str):
-        keys = [keys]
-    # FIXME: not sure if we can do this in wayland
-    if not os.getenv("DISPLAY"):
-        raise Exception("This test only works under Xorg")
-    for key in keys:
-        run_cmd(["xdotool", "key", key])
-        time.sleep(.5)
+    # best-effort cleanup
+    try:
+        run_cmd(["pkill", "winedbg"])
+    except Exception:
+        pass
+
+    print("Test code successfully detected Logos crash")
+
+    logos.close()
 
 
 def main():
     # FIXME: also test the beta channel of Logos?
+    # FIXME: also test verbum
+    # FIXME: add negative tests for when the installer fails (at different points)
 
     # FIXME: consider loop to run all of these in their supported distroboxes (https://distrobox.it/)
     # ou_dedetai = test_install()
     ou_dedetai = OuDedetai(log_level="debug", isolate=True)
     ou_dedetai.run(["--install-app", "--assume-yes"])
 
-    ou_dedetai.start_app()
-
-    # XXX: move this to a function and also have two options - one login first time resources, the other restoring from a backup (for speed)
     # If we were given credentials, use them to login and download resources.
     # This may take some time.
     # Useful bash script to set these
@@ -315,117 +762,13 @@ def main():
     # These key sequences were tested on Logos 41.
     # If the installer changes form, we'll need to adjust this.
     if logos_username and logos_password:
-        # Wait for the Logos UI to display
-        time.sleep(10)
-        # Now test to see if we can login.
-        # This test is designed to take some time
-        # Prefer more robust times over quicker tests.
-        type_string(logos_username)
-        press_keys("Tab")
-        type_string(logos_password)
-        press_keys("Return")
-        # Time delay... This may be variable, but we have no way to check
-        # Took 10 seconds on my machine, double for safety.
-        time.sleep(20)
-
-        # XXX: found a crash here if you go back during a specific time early on
+        test_first_run_resource_download(ou_dedetai, logos_username, logos_password)
+        
+        # FIXME: also support loading from a backup to achieve the same state
+        test_logos_features(ou_dedetai)
 
 
-        # Three tabs and a space agrees with second option (essential/minimal). 
-        # Some accounts with very little resources do not have 3 options, but 2.
-        press_keys(["Tab", "Tab", "Tab", "Tab", "space"])
-        # Then shift+Tab three times to get to the continue button.
-        # We need to use shift tab, as some accounts have three options in the radio
-        # (Full/essential/minimal), others only have (full/minimal)
-        # so we can't count on how many tabs to go down
-        press_keys(["Shift+Tab", "Shift+Tab", "Shift+Tab", "Return"])
-        # Wait for the UI to settle - we can wait here longer than we need to
-        time.sleep(30)
-        # Hit Continue again
-        press_keys(["Tab", "Return"])
-        # Now we wait for resources to download. Extremely variable.
-        # The continue button isn't tab navigable at this point in the install
-        #
-        # Wait until no files have been touched for a minute
-        # Then stop and restart logos. This should unstuck any stuck state.
-        # For example when testing this my download got stuck at 66%
-        # But stopping and restarting fixed.
-
-        # XXX: should we enforce this is true? (AKA always isolated?)
-        assert ou_dedetai.install_dir
-        logos_appdata_dir = None
-        for file in Path(ou_dedetai.install_dir).glob("data/wine64_bottle/drive_c/users/*/AppData/Local/Logos"): #noqa: E501
-            logos_appdata_dir = str(file)
-            break
-        assert logos_appdata_dir
-
-        wait_for_directory_to_be_untouched(logos_appdata_dir, 60)
-
-        ou_dedetai.stop_app()
-        ou_dedetai.start_app()
-
-        # Now wait for it to start (30 seconds is arbitrary)
-        time.sleep(30)
-
-        def run_command_box(command: str):
-            press_keys(["Escape", "alt+c"])
-            time.sleep(2)
-            type_string(command)
-            time.sleep(8)
-            press_keys("Return")
-
-        def open_guide(guide: str):
-            press_keys(["Escape", "alt+g"])
-            time.sleep(2)
-            type_string(guide)
-            time.sleep(3)
-            press_keys(["Tab", "Return"])
-            time.sleep(5)
-
-        def open_tool(guide: str):
-            press_keys(["Escape", "alt+t"])
-            time.sleep(2)
-            type_string(guide)
-            time.sleep(10)
-            press_keys(["Tab", "Tab", "Return"])
-
-        # Now try to do some things
-
-        # Open John 3.16 (probably in a layout of some kind)
-        # Command box results are variable
-        run_command_box("John 3:16")
-        # Let it settle
-        time.sleep(10)
-        run_command_box("Jesus factbook")
-
-        # XXX: move this out to a negative test, and switch it from a delte to a move so we can put it back.
-        # XXX: Sabotage! For the sake of a crash. Still needs testing to force a crash. 
-        # We may want to have a negative test for this to ensure our logic to detect
-        # logos idn't crash still functions later on in time.
-        # This may or may not work as the data might already be loaded.
-        shutil.rmtree(f"{ou_dedetai.install_dir}/data/wine64_bottle/drive_c/windows/Fonts/")
-
-        open_guide("bible word study")
-        time.sleep(5)
-        type_string("worship")
-        press_keys("Return")
-        # Let it settle
-        time.sleep(4)
-
-        open_tool("copy bible verses")
-
-        # Now ensure the Logos window is still open
-        # AND there is no winedbg process running (this is checked on input too)
-        try:
-            wait_for_logos_to_open()
-            raise_if_winedbg_is_running()
-        except Exception:
-            print("Test failed")
-            raise
-
-        print("Logos didn't crash while testing")
-        ou_dedetai.stop_app()
-        # Pass!
+        test_logos_crash_is_detected_by_test_code(ou_dedetai)
 
     ou_dedetai.uninstall()
 
