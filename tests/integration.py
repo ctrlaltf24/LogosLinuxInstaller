@@ -93,7 +93,7 @@ class OuDedetai:
     def isolate_files(self):
         if self._temp_dir is not None:
             shutil.rmtree(self._temp_dir)
-        # XXX: this isn't properly cleaned up. Context manager?
+        # FIXME: this isn't properly cleaned up when tests fail. Context manager?
         self._temp_dir = tempfile.mkdtemp()
         self.config = Path(self._temp_dir) / "config.json"
         self.install_dir = Path(self._temp_dir) / "install_dir"
@@ -171,7 +171,7 @@ class OuDedetai:
             self.stop_app()
         except Exception:
             pass
-        # XXX: Ideally the uninstall operation would automatically stop the app.
+        # FIXME: Ideally the uninstall operation would automatically stop the app.
         # Open an issue for this.
         self.run(["--uninstall", "-y"])
 
@@ -195,7 +195,7 @@ class OuDedetai:
         # FIXME: wait for close?
 
 
-# XXX: test this against Verbum too. It should be the same.
+# FIXME: test this against Verbum too. It should be the same.
 # If not, make this an abstract class w/overrides.
 
 class Logos:
